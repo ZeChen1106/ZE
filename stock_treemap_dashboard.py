@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------
-# S&P 500 全方位儀表板 (Arial Bold 視覺優化版)
+# S&P 500 股市儀表板 (CacheReplayClosureError 修正版)
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -15,7 +15,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# CSS 優化：調整標題與間距，並可選地調整網頁全域字體
 st.markdown("""
 <style>
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
@@ -31,14 +30,17 @@ st.caption("自動更新機制：數據每 6 小時自動更新一次 (涵蓋美
 st.sidebar.header("⚙️ 控制台")
 
 if st.sidebar.button('🔄 強制更新數據', type="primary"):
+    # 在清除快取前先清空狀態，避免衝突
     st.cache_data.clear()
+    st.session_state.pop('last_update', None)
     st.rerun()
 
 # 顯示上次更新時間
 if 'last_update' in st.session_state:
     st.sidebar.success(f"資料時間: {st.session_state['last_update']}")
 
-# --- 3. 數據獲取：成分股清單 ---
+
+# --- 3. 數據獲取：成分股清單 (無 UI 輸出) ---
 @st.cache_data(ttl=24 * 3600)
 def get_sp500_constituents():
     url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
@@ -55,30 +57,28 @@ def get_sp500_constituents():
     except Exception:
         return pd.DataFrame()
 
-# --- 4. 數據獲取：核心邏輯 ---
 
+# --- 4. 數據獲取：市值 (無 UI 輸出) ---
 @st.cache_data(ttl=24 * 3600)
 def fetch_market_caps(tickers):
-    """抓取市值"""
+    """抓取市值 (純 I/O 操作)"""
     caps = {}
-    progress_bar = st.progress(0, text="正在更新公司市值...")
-    total = len(tickers)
     
-    for i, ticker in enumerate(tickers):
-        if i % 10 == 0:
-            progress_bar.progress(i/total, text=f"正在更新市值: {ticker}")
+    # 注意：這裡不能有 st.progress 或 st.toast
+    for ticker in tickers:
         try:
             caps[ticker] = yf.Ticker(ticker).fast_info['market_cap']
         except:
             caps[ticker] = 0
             
-    progress_bar.empty()
     return caps
 
-@st.cache_data(ttl=21600) 
+# --- 5. 數據獲取：歷史價格 (無 UI 輸出) ---
+@st.cache_data(ttl=21600) # 6小時自動更新一次
 def fetch_price_history(tickers):
-    """抓取歷史股價"""
-    st.toast("正在從 Yahoo Finance 下載歷史股價...", icon="📉")
+    """
+    下載過去一年的股價歷史數據。
+    """
     try:
         data = yf.download(
             tickers, 
@@ -89,12 +89,12 @@ def fetch_price_history(tickers):
             progress=False
         )
         return data
-    except Exception as e:
-        st.error(f"下載失敗: {e}")
+    except Exception:
         return pd.DataFrame()
 
-# --- 5. 數據處理與計算 ---
+# --- 6. 數據處理與計算 (純 Pandas 操作) ---
 def process_data_for_periods(sp500_df, history_data, market_caps):
+    # 這裡的邏輯與之前保持一致 (省略重複代碼，確保純計算)
     results = []
     tickers = sp500_df['Ticker'].tolist()
     
@@ -135,11 +135,9 @@ def process_data_for_periods(sp500_df, history_data, market_caps):
             
     return pd.DataFrame(results)
 
-# --- 6. 繪圖函數 (字體修改重點) ---
+# --- 7. 繪圖函數 (保持不變) ---
 def plot_treemap(df, change_col, title, color_range):
-    """繪製單一 Treemap"""
-    
-    # 準備標籤
+    # 這裡的程式碼與前面保持一致，確保字體設定正確
     df['Label'] = df.apply(lambda x: f"{x['Ticker']}\n{x[change_col]:+.2f}%", axis=1)
     
     fig = px.treemap(
@@ -147,17 +145,14 @@ def plot_treemap(df, change_col, title, color_range):
         path=[px.Constant(title), 'Sector', 'Industry', 'Ticker'],
         values='Market Cap',
         color=change_col,
-        color_continuous_scale='RdYlGn',
+        color_continuous_scale='RdYlGn', 
         color_continuous_midpoint=0,
         range_color=color_range,
         custom_data=['Name', 'Close', change_col]
     )
     
-    # --- 關鍵修改：字體設定 ---
     fig.update_traces(
         textinfo="label+text",
-        # 使用 HTML 標籤 <b> 加粗標籤，並設定字體為 Arial Black
-        # textfont 設定會影響所有區塊內的文字
         textfont=dict(family="Arial Black", size=15), 
         hovertemplate='<b>%{label}</b><br>股價: $%{customdata[1]:.2f}<br>漲跌幅: %{customdata[2]:.2f}%'
     )
@@ -165,46 +160,62 @@ def plot_treemap(df, change_col, title, color_range):
     fig.update_layout(
         height=600, 
         margin=dict(t=40, l=10, r=10, b=10),
-        # 設定全域字體為 Arial
         font=dict(family="Arial", size=14),
         title_font=dict(family="Arial Black", size=20)
     )
     
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 7. 主程式 ---
+# --- 8. 主程式 (在外部處理 Loading 狀態) ---
 def main():
-    sp500 = get_sp500_constituents()
     
     if 'last_update' not in st.session_state:
         st.session_state['last_update'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if not sp500.empty:
+    # 必須使用 st.spinner 在外部包裹數據獲取過程
+    with st.spinner('正在載入數據 (如果超過 6 小時未更新，會自動重新下載)...'):
+        # A. 獲取資料
+        sp500 = get_sp500_constituents()
+        if sp500.empty:
+            st.error("無法取得成分股清單。")
+            return
+            
         tickers_list = sp500['Ticker'].tolist()
+        
+        # B. 抓取數據
         market_caps = fetch_market_caps(tickers_list)
         history_data = fetch_price_history(tickers_list)
         
-        if not history_data.empty:
-            with st.spinner('正在計算趨勢...'):
-                final_df = process_data_for_periods(sp500, history_data, market_caps)
-                final_df = final_df[final_df['Market Cap'] > 0]
-                
-                # 顯示四張圖表
-                st.subheader("🌞 1 日短期趨勢 (Daily)")
-                plot_treemap(final_df, '1D Change', 'S&P 500 (1 Day)', [-4, 4])
-                
-                st.subheader("📅 1 週趨勢 (Weekly)")
-                plot_treemap(final_df, '1W Change', 'S&P 500 (1 Week)', [-8, 8])
-                
-                st.subheader("🌕 1 月趨勢 (Monthly)")
-                plot_treemap(final_df, '1M Change', 'S&P 500 (1 Month)', [-15, 15])
-                
-                st.subheader("📅 1 年/長期趨勢 (YTD)")
-                plot_treemap(final_df, 'YTD Change', 'S&P 500 (1 Year)', [-40, 40])
-                
-                st.session_state['last_update'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            st.error("無法取得股價數據，請檢查網路連線。")
+        # C. 處理數據
+        if history_data.empty:
+            st.error("無法取得股價數據，請稍後再試。")
+            return
+            
+        final_df = process_data_for_periods(sp500, history_data, market_caps)
+        
+    # D. 檢查與顯示
+    if final_df.empty or final_df['Market Cap'].sum() == 0:
+        st.warning("數據處理完成，但無有效市值數據可繪圖。")
+        return
+        
+    # 過濾無效資料並顯示圖表
+    final_df = final_df[final_df['Market Cap'] > 0]
+
+    # E. 顯示四張圖表
+    st.subheader("🌞 1 日短期趨勢 (Daily)")
+    plot_treemap(final_df, '1D Change', 'S&P 500 (1 Day)', [-4, 4])
+    
+    st.subheader("📅 1 週趨勢 (Weekly)")
+    plot_treemap(final_df, '1W Change', 'S&P 500 (1 Week)', [-8, 8])
+    
+    st.subheader("🌕 1 月趨勢 (Monthly)")
+    plot_treemap(final_df, '1M Change', 'S&P 500 (1 Month)', [-15, 15])
+    
+    st.subheader("📅 1 年/長期趨勢 (YTD)")
+    plot_treemap(final_df, 'YTD Change', 'S&P 500 (1 Year)', [-40, 40])
+    
+    # 成功運行後更新時間
+    st.session_state['last_update'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 if __name__ == '__main__':
     main()
