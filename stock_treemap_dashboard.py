@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------
-# 股市戰情室 (美股 + 台股 + 總經 + 歷史演變) - 旗艦版 (完美競賽圖版)
+# 股市戰情室 - 絲滑競賽圖終極版 (Interpolation + Rank Locking)
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -7,6 +7,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import requests
 from datetime import datetime
 
@@ -156,151 +157,100 @@ def calculate_fear_greed(vix_close, sp500_close):
     final = (vix_score * 0.6) + (rsi.iloc[-1] * 0.4)
     return int(final), vix_close, rsi.iloc[-1]
 
-# --- 5. 新增：歷史市值數據 (2000-2025 完整逐年版) ---
+# --- 5. 歷史數據處理：插補與排名 (關鍵優化) ---
+
 @st.cache_data
-def get_historical_market_cap_data():
-    """提供 2000 - 2025 的歷史市值霸主數據 (單位：十億美元)"""
-    data = []
+def get_processed_race_data():
+    """
+    生成 2000-2025 的平滑插補數據，並鎖定 Top 10
+    """
+    # 1. 原始數據 (定義每個關鍵年份的數值)
+    raw_data = []
     
-    # 2000-2002: 網路泡沫破裂
-    data.extend([
-        {"Year": 2000, "Company": "Microsoft", "Market Cap": 586, "Sector": "Technology"},
-        {"Year": 2000, "Company": "GE", "Market Cap": 477, "Sector": "Industrial"},
-        {"Year": 2000, "Company": "Cisco", "Market Cap": 366, "Sector": "Technology"},
-        {"Year": 2000, "Company": "ExxonMobil", "Market Cap": 272, "Sector": "Energy"},
-        {"Year": 2000, "Company": "Intel", "Market Cap": 275, "Sector": "Technology"},
-        
-        {"Year": 2001, "Company": "GE", "Market Cap": 398, "Sector": "Industrial"},
-        {"Year": 2001, "Company": "Microsoft", "Market Cap": 358, "Sector": "Technology"},
-        {"Year": 2001, "Company": "ExxonMobil", "Market Cap": 270, "Sector": "Energy"},
-        {"Year": 2001, "Company": "Citi", "Market Cap": 255, "Sector": "Finance"},
-        {"Year": 2001, "Company": "Walmart", "Market Cap": 258, "Sector": "Consumer"},
-        
-        {"Year": 2002, "Company": "Microsoft", "Market Cap": 276, "Sector": "Technology"},
-        {"Year": 2002, "Company": "GE", "Market Cap": 240, "Sector": "Industrial"},
-        {"Year": 2002, "Company": "ExxonMobil", "Market Cap": 235, "Sector": "Energy"},
-        {"Year": 2002, "Company": "Walmart", "Market Cap": 220, "Sector": "Consumer"},
-        {"Year": 2002, "Company": "Pfizer", "Market Cap": 190, "Sector": "Health"},
-    ])
+    # 定義輔助函數簡化輸入
+    def add_year(year, *companies):
+        for comp in companies:
+            raw_data.append({"Year": year, "Company": comp[0], "Market Cap": comp[1], "Sector": comp[2]})
 
-    # 2003-2007: 能源與金融的黃金年代
-    for y in range(2003, 2008):
-        base_exxon = 250 + (y-2003)*40
-        base_ge = 280 + (y-2003)*20
-        base_msft = 260 + (y-2003)*5
-        data.extend([
-            {"Year": y, "Company": "ExxonMobil", "Market Cap": base_exxon, "Sector": "Energy"},
-            {"Year": y, "Company": "GE", "Market Cap": base_ge, "Sector": "Industrial"},
-            {"Year": y, "Company": "Microsoft", "Market Cap": base_msft, "Sector": "Technology"},
-            {"Year": y, "Company": "Citi", "Market Cap": 250 + (y-2003)*10, "Sector": "Finance"},
-            {"Year": y, "Company": "Gazprom", "Market Cap": 100 + (y-2003)*40, "Sector": "Energy"}, 
-        ])
+    # 2000
+    add_year(2000, 
+             ("Microsoft", 586, "Technology"), ("GE", 477, "Industrial"), ("Cisco", 366, "Technology"),
+             ("ExxonMobil", 272, "Energy"), ("Intel", 275, "Technology"), ("Walmart", 230, "Consumer"))
+    # 2002
+    add_year(2002, 
+             ("Microsoft", 276, "Technology"), ("GE", 240, "Industrial"), ("ExxonMobil", 235, "Energy"),
+             ("Walmart", 220, "Consumer"), ("Pfizer", 190, "Health"), ("Citi", 180, "Finance"))
+    # 2005
+    add_year(2005, 
+             ("ExxonMobil", 360, "Energy"), ("GE", 350, "Industrial"), ("Microsoft", 270, "Technology"),
+             ("Citi", 240, "Finance"), ("BP", 230, "Energy"), ("Walmart", 200, "Consumer"))
+    # 2008 (金融海嘯)
+    add_year(2008, 
+             ("ExxonMobil", 406, "Energy"), ("Walmart", 218, "Consumer"), ("Procter & Gamble", 185, "Consumer"),
+             ("Microsoft", 170, "Technology"), ("ICBC", 175, "Finance"), ("Johnson & Johnson", 160, "Health"))
+    # 2011 (Apple崛起)
+    add_year(2011, 
+             ("ExxonMobil", 400, "Energy"), ("Apple", 376, "Technology"), ("PetroChina", 270, "Energy"),
+             ("Shell", 230, "Energy"), ("Microsoft", 220, "Technology"), ("ICBC", 210, "Finance"))
+    # 2014
+    add_year(2014, 
+             ("Apple", 600, "Technology"), ("ExxonMobil", 420, "Energy"), ("Google", 360, "Technology"),
+             ("Microsoft", 340, "Technology"), ("Berkshire", 300, "Finance"), ("Johnson & Johnson", 280, "Health"))
+    # 2017
+    add_year(2017, 
+             ("Apple", 860, "Technology"), ("Alphabet", 720, "Technology"), ("Microsoft", 650, "Technology"),
+             ("Amazon", 560, "Technology"), ("Facebook", 500, "Technology"), ("Berkshire", 480, "Finance"))
+    # 2020
+    add_year(2020, 
+             ("Apple", 2250, "Technology"), ("Saudi Aramco", 2000, "Energy"), ("Microsoft", 1680, "Technology"),
+             ("Amazon", 1600, "Technology"), ("Alphabet", 1180, "Technology"), ("Facebook", 750, "Technology"))
+    # 2022
+    add_year(2022, 
+             ("Apple", 2100, "Technology"), ("Saudi Aramco", 1900, "Energy"), ("Microsoft", 1780, "Technology"),
+             ("Alphabet", 1100, "Technology"), ("Amazon", 850, "Technology"), ("Nvidia", 400, "Technology"))
+    # 2024
+    add_year(2024, 
+             ("Apple", 3300, "Technology"), ("Microsoft", 3200, "Technology"), ("Nvidia", 2900, "Technology"),
+             ("Alphabet", 2100, "Technology"), ("Amazon", 1900, "Technology"), ("Saudi Aramco", 1800, "Energy"))
+    # 2025 (Forecast)
+    add_year(2025, 
+             ("Apple", 3550, "Technology"), ("Nvidia", 3450, "Technology"), ("Microsoft", 3350, "Technology"),
+             ("Alphabet", 2250, "Technology"), ("Amazon", 2300, "Technology"), ("Meta", 1200, "Technology"))
 
-    # 2008-2011: 金融海嘯到復甦
-    data.extend([
-        {"Year": 2008, "Company": "ExxonMobil", "Market Cap": 406, "Sector": "Energy"},
-        {"Year": 2008, "Company": "Walmart", "Market Cap": 218, "Sector": "Consumer"},
-        {"Year": 2008, "Company": "Procter & Gamble", "Market Cap": 185, "Sector": "Consumer"},
-        {"Year": 2008, "Company": "Microsoft", "Market Cap": 170, "Sector": "Technology"},
-        {"Year": 2008, "Company": "ICBC", "Market Cap": 175, "Sector": "Finance"}, 
+    df = pd.DataFrame(raw_data)
 
-        {"Year": 2009, "Company": "PetroChina", "Market Cap": 350, "Sector": "Energy"},
-        {"Year": 2009, "Company": "ExxonMobil", "Market Cap": 320, "Sector": "Energy"},
-        {"Year": 2009, "Company": "Microsoft", "Market Cap": 270, "Sector": "Technology"},
-        {"Year": 2009, "Company": "ICBC", "Market Cap": 268, "Sector": "Finance"},
-        {"Year": 2009, "Company": "Apple", "Market Cap": 190, "Sector": "Technology"},
+    # 2. 數據插補 (Interpolation) - 關鍵步驟
+    # 轉置成寬表格：Year 為 Index, Company 為 Column
+    df_pivot = df.pivot_table(index='Year', columns='Company', values='Market Cap')
+    
+    # 建立 Sector 對照表
+    sector_map = df.drop_duplicates('Company').set_index('Company')['Sector']
 
-        {"Year": 2010, "Company": "ExxonMobil", "Market Cap": 369, "Sector": "Energy"},
-        {"Year": 2010, "Company": "Apple", "Market Cap": 296, "Sector": "Technology"}, 
-        {"Year": 2010, "Company": "PetroChina", "Market Cap": 303, "Sector": "Energy"},
-        {"Year": 2010, "Company": "Microsoft", "Market Cap": 238, "Sector": "Technology"},
-        {"Year": 2010, "Company": "BHP Billiton", "Market Cap": 210, "Sector": "Energy"},
+    # 擴展年份索引，加入小數點年份 (例如 2000.0, 2000.2, 2000.4 ...)
+    # 增加頻率可以讓動畫更順暢
+    new_index = np.arange(2000, 2025.2, 0.2) 
+    df_interp = df_pivot.reindex(df_pivot.index.union(new_index)).interpolate(method='linear')
+    df_interp = df_interp.reindex(new_index) # 只保留重新採樣的年份
+    df_interp = df_interp.fillna(0) # 沒資料補0
 
-        {"Year": 2011, "Company": "ExxonMobil", "Market Cap": 400, "Sector": "Energy"},
-        {"Year": 2011, "Company": "Apple", "Market Cap": 376, "Sector": "Technology"},
-        {"Year": 2011, "Company": "PetroChina", "Market Cap": 270, "Sector": "Energy"},
-        {"Year": 2011, "Company": "Shell", "Market Cap": 230, "Sector": "Energy"},
-        {"Year": 2011, "Company": "Microsoft", "Market Cap": 220, "Sector": "Technology"},
-    ])
+    # 轉回長表格
+    df_melt = df_interp.reset_index().melt(id_vars='index', var_name='Company', value_name='Market Cap')
+    df_melt = df_melt.rename(columns={'index': 'Year'})
+    
+    # 3. 每一幀重新計算排名 (Rank)
+    # 這步讓排名可以動態交換
+    df_melt['Rank'] = df_melt.groupby('Year')['Market Cap'].rank(method='first', ascending=False)
+    
+    # 4. 只保留 Top 10
+    df_final = df_melt[df_melt['Rank'] <= 10].copy()
+    
+    # 補回 Sector 資訊
+    df_final['Sector'] = df_final['Company'].map(sector_map)
+    
+    # 格式化顯示文字
+    df_final['Label'] = df_final.apply(lambda x: f" {x['Company']} (${int(x['Market Cap'])}B)", axis=1)
 
-    # 2012-2016: Apple 稱霸
-    for y in range(2012, 2017):
-        apple_cap = 400 + (y-2012)*50
-        exxon_cap = 400 - (y-2012)*20 
-        goog_cap = 250 + (y-2012)*50
-        msft_cap = 250 + (y-2012)*30
-        data.extend([
-            {"Year": y, "Company": "Apple", "Market Cap": apple_cap, "Sector": "Technology"},
-            {"Year": y, "Company": "ExxonMobil", "Market Cap": exxon_cap, "Sector": "Energy"},
-            {"Year": y, "Company": "Alphabet", "Market Cap": goog_cap, "Sector": "Technology"},
-            {"Year": y, "Company": "Microsoft", "Market Cap": msft_cap, "Sector": "Technology"},
-            {"Year": y, "Company": "Berkshire", "Market Cap": 250 + (y-2012)*20, "Sector": "Finance"},
-        ])
-
-    # 2017-2019: 科技巨頭時代
-    data.extend([
-        {"Year": 2017, "Company": "Apple", "Market Cap": 860, "Sector": "Technology"},
-        {"Year": 2017, "Company": "Alphabet", "Market Cap": 720, "Sector": "Technology"},
-        {"Year": 2017, "Company": "Microsoft", "Market Cap": 650, "Sector": "Technology"},
-        {"Year": 2017, "Company": "Amazon", "Market Cap": 560, "Sector": "Technology"},
-        {"Year": 2017, "Company": "Facebook", "Market Cap": 500, "Sector": "Technology"},
-
-        {"Year": 2018, "Company": "Microsoft", "Market Cap": 780, "Sector": "Technology"},
-        {"Year": 2018, "Company": "Apple", "Market Cap": 740, "Sector": "Technology"},
-        {"Year": 2018, "Company": "Amazon", "Market Cap": 730, "Sector": "Technology"},
-        {"Year": 2018, "Company": "Alphabet", "Market Cap": 720, "Sector": "Technology"},
-        {"Year": 2018, "Company": "Berkshire", "Market Cap": 490, "Sector": "Finance"},
-
-        {"Year": 2019, "Company": "Saudi Aramco", "Market Cap": 1880, "Sector": "Energy"}, 
-        {"Year": 2019, "Company": "Apple", "Market Cap": 1200, "Sector": "Technology"},
-        {"Year": 2019, "Company": "Microsoft", "Market Cap": 1150, "Sector": "Technology"},
-        {"Year": 2019, "Company": "Alphabet", "Market Cap": 920, "Sector": "Technology"},
-        {"Year": 2019, "Company": "Amazon", "Market Cap": 910, "Sector": "Technology"},
-    ])
-
-    # 2020-2022: 疫情與數位轉型
-    data.extend([
-        {"Year": 2020, "Company": "Apple", "Market Cap": 2250, "Sector": "Technology"},
-        {"Year": 2020, "Company": "Saudi Aramco", "Market Cap": 2000, "Sector": "Energy"},
-        {"Year": 2020, "Company": "Microsoft", "Market Cap": 1680, "Sector": "Technology"},
-        {"Year": 2020, "Company": "Amazon", "Market Cap": 1600, "Sector": "Technology"},
-        {"Year": 2020, "Company": "Alphabet", "Market Cap": 1180, "Sector": "Technology"},
-
-        {"Year": 2021, "Company": "Apple", "Market Cap": 2900, "Sector": "Technology"},
-        {"Year": 2021, "Company": "Microsoft", "Market Cap": 2500, "Sector": "Technology"},
-        {"Year": 2021, "Company": "Alphabet", "Market Cap": 1900, "Sector": "Technology"},
-        {"Year": 2021, "Company": "Saudi Aramco", "Market Cap": 1850, "Sector": "Energy"},
-        {"Year": 2021, "Company": "Amazon", "Market Cap": 1690, "Sector": "Technology"},
-        
-        {"Year": 2022, "Company": "Apple", "Market Cap": 2100, "Sector": "Technology"},
-        {"Year": 2022, "Company": "Saudi Aramco", "Market Cap": 1900, "Sector": "Energy"},
-        {"Year": 2022, "Company": "Microsoft", "Market Cap": 1780, "Sector": "Technology"},
-        {"Year": 2022, "Company": "Alphabet", "Market Cap": 1100, "Sector": "Technology"},
-        {"Year": 2022, "Company": "Amazon", "Market Cap": 850, "Sector": "Technology"}, 
-    ])
-
-    # 2023-2025: AI 時代
-    data.extend([
-        {"Year": 2023, "Company": "Apple", "Market Cap": 2800, "Sector": "Technology"},
-        {"Year": 2023, "Company": "Microsoft", "Market Cap": 2790, "Sector": "Technology"},
-        {"Year": 2023, "Company": "Saudi Aramco", "Market Cap": 2100, "Sector": "Energy"},
-        {"Year": 2023, "Company": "Alphabet", "Market Cap": 1700, "Sector": "Technology"},
-        {"Year": 2023, "Company": "Nvidia", "Market Cap": 1200, "Sector": "Technology"}, 
-
-        {"Year": 2024, "Company": "Apple", "Market Cap": 3300, "Sector": "Technology"},
-        {"Year": 2024, "Company": "Microsoft", "Market Cap": 3200, "Sector": "Technology"},
-        {"Year": 2024, "Company": "Nvidia", "Market Cap": 2900, "Sector": "Technology"}, 
-        {"Year": 2024, "Company": "Alphabet", "Market Cap": 2100, "Sector": "Technology"},
-        {"Year": 2024, "Company": "Amazon", "Market Cap": 1900, "Sector": "Technology"},
-
-        {"Year": 2025, "Company": "Apple", "Market Cap": 3650, "Sector": "Technology"}, 
-        {"Year": 2025, "Company": "Nvidia", "Market Cap": 3600, "Sector": "Technology"}, 
-        {"Year": 2025, "Company": "Microsoft", "Market Cap": 3250, "Sector": "Technology"},
-        {"Year": 2025, "Company": "Alphabet", "Market Cap": 2200, "Sector": "Technology"},
-        {"Year": 2025, "Company": "Amazon", "Market Cap": 2250, "Sector": "Technology"},
-    ])
-
-    return pd.DataFrame(data)
+    return df_final.sort_values(['Year', 'Rank'])
 
 # --- 6. 核心計算邏輯 ---
 def process_data_for_periods(base_df, history_data, market_caps):
@@ -404,40 +354,51 @@ def render_macro_page():
                 st.plotly_chart(fig_light, use_container_width=True)
 
 def render_history_page():
-    st.subheader("⏳ 全球市值霸主演變史 (2000-2025)")
-    st.caption("動畫控制：請在上方輸入框調整播放速度 (數字越大越慢)。")
+    st.subheader("⏳ 全球市值霸主競賽 (Top 10)")
+    st.caption("動畫已優化：自動補間動畫、Top 10 鎖定視角、絲滑換位效果。")
     
     col_input, col_dummy = st.columns([1, 4])
     with col_input:
-        speed_sec = st.number_input("播放間隔 (秒)", min_value=0.1, max_value=5.0, value=0.5, step=0.1)
+        speed_sec = st.number_input("播放間隔 (秒)", min_value=0.05, max_value=2.0, value=0.1, step=0.05)
     
-    df_hist = get_historical_market_cap_data()
-    
-    # 關鍵：確保每一年的數據是按照市值排序的，這樣圖表才會自動上下交換位置
-    df_hist = df_hist.sort_values(by=['Year', 'Market Cap'], ascending=[True, True])
+    # 取得插補後的高密度數據
+    df_race = get_processed_race_data()
 
+    # 建立競賽圖
+    # 技巧：Y軸使用 'Rank' 而不是 'Company'，這樣視角就會固定在 1-10 名
     fig = px.bar(
-        df_hist, 
+        df_race, 
         x="Market Cap", 
-        y="Company", 
+        y="Rank", # 關鍵：使用排名作為 Y 軸，鎖定位置
         color="Sector",
         animation_frame="Year", 
-        range_x=[0, 4200], # 設定到 4200 以容納 Nvidia/Apple 未來增長，避免爆框
+        range_x=[0, 4200], # 固定 X 軸避免縮放
+        range_y=[10.5, 0.5], # 固定 Y 軸顯示第 1 到第 10 名 (反轉座標)
         orientation='h',
-        text="Market Cap",
-        title="全球前五大市值公司變遷 (單位：十億美元)",
+        text="Label", # 顯示公司名稱與數值
+        title="全球市值 Top 10 爭霸戰 (單位：十億美元)",
         color_discrete_map={
             "Technology": "#1f77b4", "Energy": "#d62728", "Industrial": "#7f7f7f",
             "Finance": "#2ca02c", "Consumer": "#9467bd", "Health": "#e377c2"
         }
     )
     
+    # 設定動畫速度
     fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = int(speed_sec * 1000)
-    
-    # 這裡的 categoryorder 是實現「競賽效果」的關鍵
+    # 設定轉場平滑度 (easing)
+    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = int(speed_sec * 1000 / 2)
+    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["easing"] = "linear"
+
     fig.update_layout(
-        xaxis_title="市值 (Billions USD)", yaxis_title="", height=600, showlegend=True,
-        yaxis={'categoryorder':'total ascending'} # 讓最大的 Bar 永遠在最上面 (或下面)
+        xaxis_title="市值 (Billions USD)", 
+        yaxis_title="排名", 
+        height=600, 
+        showlegend=True,
+        yaxis=dict(
+            tickmode='linear', # 強制顯示 1-10 的刻度
+            tick0=1,
+            dtick=1
+        )
     )
     
     st.plotly_chart(fig, use_container_width=True)
