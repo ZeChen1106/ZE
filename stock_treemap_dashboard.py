@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------
-# 股市戰情室 - 絲滑競賽圖終極版 (Interpolation + Rank Locking)
+# 股市戰情室 - 絲滑競賽圖終極修正版 (Fixed KeyError)
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -157,17 +157,16 @@ def calculate_fear_greed(vix_close, sp500_close):
     final = (vix_score * 0.6) + (rsi.iloc[-1] * 0.4)
     return int(final), vix_close, rsi.iloc[-1]
 
-# --- 5. 歷史數據處理：插補與排名 (關鍵優化) ---
+# --- 5. 歷史數據處理：插補與排名 (修復 Bug 版) ---
 
 @st.cache_data
 def get_processed_race_data():
     """
     生成 2000-2025 的平滑插補數據，並鎖定 Top 10
     """
-    # 1. 原始數據 (定義每個關鍵年份的數值)
+    # 1. 原始數據
     raw_data = []
     
-    # 定義輔助函數簡化輸入
     def add_year(year, *companies):
         for comp in companies:
             raw_data.append({"Year": year, "Company": comp[0], "Market Cap": comp[1], "Sector": comp[2]})
@@ -184,11 +183,11 @@ def get_processed_race_data():
     add_year(2005, 
              ("ExxonMobil", 360, "Energy"), ("GE", 350, "Industrial"), ("Microsoft", 270, "Technology"),
              ("Citi", 240, "Finance"), ("BP", 230, "Energy"), ("Walmart", 200, "Consumer"))
-    # 2008 (金融海嘯)
+    # 2008
     add_year(2008, 
              ("ExxonMobil", 406, "Energy"), ("Walmart", 218, "Consumer"), ("Procter & Gamble", 185, "Consumer"),
              ("Microsoft", 170, "Technology"), ("ICBC", 175, "Finance"), ("Johnson & Johnson", 160, "Health"))
-    # 2011 (Apple崛起)
+    # 2011
     add_year(2011, 
              ("ExxonMobil", 400, "Energy"), ("Apple", 376, "Technology"), ("PetroChina", 270, "Energy"),
              ("Shell", 230, "Energy"), ("Microsoft", 220, "Technology"), ("ICBC", 210, "Finance"))
@@ -219,26 +218,26 @@ def get_processed_race_data():
 
     df = pd.DataFrame(raw_data)
 
-    # 2. 數據插補 (Interpolation) - 關鍵步驟
-    # 轉置成寬表格：Year 為 Index, Company 為 Column
+    # 2. 數據插補 (Interpolation)
+    # 轉置
     df_pivot = df.pivot_table(index='Year', columns='Company', values='Market Cap')
     
     # 建立 Sector 對照表
     sector_map = df.drop_duplicates('Company').set_index('Company')['Sector']
 
-    # 擴展年份索引，加入小數點年份 (例如 2000.0, 2000.2, 2000.4 ...)
-    # 增加頻率可以讓動畫更順暢
+    # 擴展年份索引
     new_index = np.arange(2000, 2025.2, 0.2) 
     df_interp = df_pivot.reindex(df_pivot.index.union(new_index)).interpolate(method='linear')
-    df_interp = df_interp.reindex(new_index) # 只保留重新採樣的年份
-    df_interp = df_interp.fillna(0) # 沒資料補0
+    df_interp = df_interp.reindex(new_index)
+    df_interp = df_interp.fillna(0) 
 
-    # 轉回長表格
-    df_melt = df_interp.reset_index().melt(id_vars='index', var_name='Company', value_name='Market Cap')
-    df_melt = df_melt.rename(columns={'index': 'Year'})
+    # 確保 Index 名稱為 'Year'，避免 reset_index 出錯
+    df_interp.index.name = 'Year'
+
+    # 轉回長表格 (修正：id_vars 改為 'Year')
+    df_melt = df_interp.reset_index().melt(id_vars='Year', var_name='Company', value_name='Market Cap')
     
-    # 3. 每一幀重新計算排名 (Rank)
-    # 這步讓排名可以動態交換
+    # 3. 每一幀重新計算排名
     df_melt['Rank'] = df_melt.groupby('Year')['Market Cap'].rank(method='first', ascending=False)
     
     # 4. 只保留 Top 10
@@ -361,21 +360,19 @@ def render_history_page():
     with col_input:
         speed_sec = st.number_input("播放間隔 (秒)", min_value=0.05, max_value=2.0, value=0.1, step=0.05)
     
-    # 取得插補後的高密度數據
     df_race = get_processed_race_data()
 
     # 建立競賽圖
-    # 技巧：Y軸使用 'Rank' 而不是 'Company'，這樣視角就會固定在 1-10 名
     fig = px.bar(
         df_race, 
         x="Market Cap", 
-        y="Rank", # 關鍵：使用排名作為 Y 軸，鎖定位置
+        y="Rank", 
         color="Sector",
         animation_frame="Year", 
-        range_x=[0, 4200], # 固定 X 軸避免縮放
-        range_y=[10.5, 0.5], # 固定 Y 軸顯示第 1 到第 10 名 (反轉座標)
+        range_x=[0, 4200], 
+        range_y=[10.5, 0.5], # 固定 Y 軸
         orientation='h',
-        text="Label", # 顯示公司名稱與數值
+        text="Label", 
         title="全球市值 Top 10 爭霸戰 (單位：十億美元)",
         color_discrete_map={
             "Technology": "#1f77b4", "Energy": "#d62728", "Industrial": "#7f7f7f",
@@ -383,9 +380,7 @@ def render_history_page():
         }
     )
     
-    # 設定動畫速度
     fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = int(speed_sec * 1000)
-    # 設定轉場平滑度 (easing)
     fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = int(speed_sec * 1000 / 2)
     fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["easing"] = "linear"
 
@@ -394,11 +389,7 @@ def render_history_page():
         yaxis_title="排名", 
         height=600, 
         showlegend=True,
-        yaxis=dict(
-            tickmode='linear', # 強制顯示 1-10 的刻度
-            tick0=1,
-            dtick=1
-        )
+        yaxis=dict(tickmode='linear', tick0=1, dtick=1)
     )
     
     st.plotly_chart(fig, use_container_width=True)
