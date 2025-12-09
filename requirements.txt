@@ -2,4 +2,6 @@ streamlit
 plotly
 yfinance
 pandas
+matplotlib
+
 # 這些是您程式中使用的所有主要函式庫
