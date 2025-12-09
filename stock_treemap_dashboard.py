@@ -353,46 +353,92 @@ def render_macro_page():
                 st.plotly_chart(fig_light, use_container_width=True)
 
 def render_history_page():
-    st.subheader("⏳ 全球市值霸主競賽 (Top 10)")
-    st.caption("動畫已優化：自動補間動畫、Top 10 鎖定視角、絲滑換位效果。")
+    with tab2:  # 請確認這裡的 tab 變數名稱是否對應您的設定 (例如 tab2 或 tab3)
+    st.header("全球市值霸主競賽")
+    st.caption("動態展示全球頂尖企業的市值消長")
     
-    col_input, col_dummy = st.columns([1, 4])
-    with col_input:
-        speed_sec = st.number_input("播放間隔 (秒)", min_value=0.05, max_value=2.0, value=0.1, step=0.05)
-    
-    df_race = get_processed_race_data()
+    # 加入按鈕，避免網頁一開啟就自動運算卡住
+    if st.button('▶️ 開始競賽', key='btn_race'):
+        
+        # 顯示進度提示
+        with st.spinner('正在計算數據並繪製動畫，請稍候...'):
+            
+            # 1. 準備數據 (假設使用全域變數 df_history，若無請確保有讀取數據)
+            # 這裡進行插值讓動畫更順暢
+            df_race = df_history.copy()
+            
+            # 2. 設定畫布
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # 定義顏色 (固定每間公司的顏色)
+            unique_stocks = df_race.columns
+            colors = plt.cm.tab10(np.linspace(0, 1, len(unique_stocks)))
+            color_map = dict(zip(unique_stocks, colors))
 
-    # 建立競賽圖
-    fig = px.bar(
-        df_race, 
-        x="Market Cap", 
-        y="Rank", 
-        color="Sector",
-        animation_frame="Year", 
-        range_x=[0, 4200], 
-        range_y=[10.5, 0.5], # 固定 Y 軸
-        orientation='h',
-        text="Label", 
-        title="全球市值 Top 10 爭霸戰 (單位：十億美元)",
-        color_discrete_map={
-            "Technology": "#1f77b4", "Energy": "#d62728", "Industrial": "#7f7f7f",
-            "Finance": "#2ca02c", "Consumer": "#9467bd", "Health": "#e377c2"
-        }
-    )
-    
-    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = int(speed_sec * 1000)
-    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = int(speed_sec * 1000 / 2)
-    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["easing"] = "linear"
+            def update(current_frame):
+                # -------------------------------------------------------
+                # [關鍵修正 1] 清除上一幀畫面
+                # 這行指令是拿掉「飛入特效」的關鍵，確保每一幀都是乾淨重畫
+                # -------------------------------------------------------
+                ax.clear()
+                
+                # A. 取得當前幀數據並排序 (數值大的在下面，Matplotlib barh 預設由下往上畫)
+                dff = df_race.iloc[current_frame].sort_values(ascending=True)
+                
+                # B. 繪製 Bar
+                bar_colors = [color_map[name] for name in dff.index]
+                bars = ax.barh(dff.index, dff.values, color=bar_colors, height=0.8)
+                
+                # -------------------------------------------------------
+                # [關鍵修正 2] 將文字固定在 Bar 的右側
+                # -------------------------------------------------------
+                # 設定文字與 Bar 的間距 (動態計算：最大值的 1%)
+                dx = dff.values.max() * 0.01
+                
+                for bar, name in zip(bars, dff.index):
+                    width = bar.get_width() # 取得 Bar 長度
+                    
+                    # --- 數值文字 (固定在右側) ---
+                    # x 座標 = width + dx
+                    # ha='left' 讓文字向右延伸
+                    ax.text(width + dx, 
+                            bar.get_y() + bar.get_height()/2, 
+                            f'{width:,.0f}', 
+                            ha='left', va='center', size=12, weight='bold')
+                    
+                    # --- 公司名稱 (固定在 Bar 內部左側) ---
+                    ax.text(dx, 
+                            bar.get_y() + bar.get_height()/2, 
+                            name, 
+                            ha='left', va='center', color='white', weight='bold', size=10)
 
-    fig.update_layout(
-        xaxis_title="市值 (Billions USD)", 
-        yaxis_title="排名", 
-        height=600, 
-        showlegend=True,
-        yaxis=dict(tickmode='linear', tick0=1, dtick=1)
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+                # C. 調整樣式與座標軸
+                # 顯示當前時間/幀數
+                ax.text(1, 0.4, f'Day: {current_frame}', transform=ax.transAxes, 
+                        color='#777777', size=40, ha='right', weight=800, alpha=0.3)
+                
+                # [重要] 設定 X 軸範圍，確保右邊文字不會被切掉
+                # 必須比最大值大一點 (例如 1.2 倍)
+                ax.set_xlim(0, dff.values.max() * 1.2)
+                
+                ax.set_title('Global Market Cap Race', size=16, weight='bold', loc='left')
+                ax.xaxis.set_ticks_position('top')
+                ax.tick_params(axis='x', colors='#777777')
+                ax.set_yticks([]) # 隱藏 Y 軸標籤 (因為已寫在 Bar 內)
+                ax.grid(which='major', axis='x', linestyle='--', alpha=0.5)
+                
+                # 移除邊框
+                plt.box(False)
+
+            # 3. 建立動畫
+            # interval=100 代表每 0.1 秒換一張
+            anim = animation.FuncAnimation(fig, update, frames=len(df_race), interval=100)
+            
+            # 4. 輸出到 Streamlit
+            components.html(anim.to_jshtml(), height=600)
+            
+            # 關閉圖表釋放記憶體
+            plt.close(fig)
 
 # --- 9. 主程式 ---
 def main():
