@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------
-# 股市戰情室 (美股 S&P 500 + 台股權值 + 風險總經) - 旗艦版
+# 股市戰情室 (美股 + 台股 + 總經 + 歷史演變) - 旗艦版
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -7,7 +7,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime
 
 # --- 1. Streamlit 頁面設定 ---
 st.set_page_config(
@@ -20,17 +21,27 @@ st.markdown("""
 <style>
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
     h3 { margin-top: 2rem; border-bottom: 2px solid #f0f2f6; padding-bottom: 0.5rem; font-family: 'Arial Black', sans-serif; }
-    .stMetric { background-color: #f9f9f9; padding: 10px; border-radius: 5px; border-left: 5px solid #ff4b4b; }
+    
+    /* 景氣燈號 CSS */
+    .light-circle {
+        height: 100px; width: 100px; border-radius: 50%; display: inline-block;
+        box-shadow: 0 0 20px rgba(0,0,0,0.5); margin: 10px;
+    }
+    .light-text { font-size: 24px; font-weight: bold; text-align: center; margin-top: 10px; }
+    .score-text { font-size: 50px; font-weight: bold; color: #333; text-align: center; line-height: 100px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 側邊欄：模式切換與控制 ---
+# --- 2. 側邊欄控制 ---
 st.sidebar.header("⚙️ 戰情控制台")
-
-# 新增：市場選擇模式 (三種模式)
 market_mode = st.sidebar.radio(
     "📊 選擇儀表板",
-    ["🇺🇸 美股 S&P 500", "🇹🇼 台股權值股 (TWSE)", "📉 總經與風險指標 (Macro)"]
+    [
+        "🇺🇸 美股 S&P 500", 
+        "🇹🇼 台股權值股 (TWSE)", 
+        "📉 總經與風險指標 (Macro)",
+        "⏳ 歷史市值霸主變遷 (History)"
+    ]
 )
 
 if st.sidebar.button('🔄 強制更新數據', type="primary"):
@@ -43,11 +54,10 @@ if 'last_update' in st.session_state:
 
 st.title(f"📊 {market_mode}")
 
-# --- 3. 核心數據函數 (快取) ---
+# --- 3. 核心數據函數 (股票與總經) ---
 
 @st.cache_data(ttl=24 * 3600)
 def get_tw_constituents():
-    """台股主要權值股清單"""
     data = [
         {'Ticker': '2330.TW', 'Name': '台積電', 'Sector': '半導體', 'Industry': '晶圓代工'},
         {'Ticker': '2454.TW', 'Name': '聯發科', 'Sector': '半導體', 'Industry': 'IC設計'},
@@ -74,7 +84,6 @@ def get_tw_constituents():
 
 @st.cache_data(ttl=24 * 3600)
 def get_sp500_constituents():
-    """美股 S&P 500 清單"""
     url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
     try:
         df = pd.read_csv(url)
@@ -102,189 +111,225 @@ def fetch_market_caps(tickers):
 @st.cache_data(ttl=21600) 
 def fetch_price_history(tickers, period="1y"):
     try:
-        data = yf.download(
-            tickers, 
-            period=period, 
-            group_by='ticker', 
-            auto_adjust=True, 
-            threads=True, 
-            progress=False
-        )
+        data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, threads=True, progress=False)
         return data
     except Exception:
         return pd.DataFrame()
 
-# --- 4. 總經數據獲取與計算 ---
+# --- 4. 總經數據獲取 ---
 @st.cache_data(ttl=3600)
 def get_macro_data():
-    """抓取 VIX, 台股大盤, 美股大盤 用於計算指標"""
-    tickers = ["^VIX", "^TWII", "^GSPC"]
+    tickers = ["^VIX", "^GSPC"]
     data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
     return data
 
+@st.cache_data(ttl=24 * 3600)
+def get_taiwan_light():
+    url = "https://index.ndc.gov.tw/n/json/data/measure"
+    try:
+        response = requests.post(url, headers={"User-Agent": "Mozilla/5.0"})
+        data = response.json()
+        measure_data = data['indicators']['measure'][0]['data']
+        df = pd.DataFrame(measure_data)
+        df['date_str'] = df['y'] + df['m']
+        latest = df.iloc[-1]
+        
+        history_df = df.tail(12).copy()
+        history_df['display_date'] = history_df['y'] + '/' + history_df['m']
+        history_df['score'] = history_df['s'].astype(int)
+        
+        return {
+            'score': int(latest['s']),
+            'light': latest['l'],
+            'date': f"{latest['y']}年{latest['m']}月",
+            'history': history_df
+        }
+    except: return None
+
 def calculate_fear_greed(vix_close, sp500_close):
-    """
-    自製「技術面恐貪指數」 (Proxy):
-    由 VIX (恐慌程度) 與 RSI (市場動能) 加權計算。
-    0-25: 極度恐懼, 25-45: 恐懼, 45-55: 中立, 55-75: 貪婪, 75-100: 極度貪婪
-    """
-    # 1. VIX 分數 (VIX 越高越恐慌，分數越低)
-    # 假設 VIX 10 是極度貪婪 (100分), VIX 40 是極度恐慌 (0分)
     vix_score = max(0, min(100, (40 - vix_close) * (100 / 30)))
-    
-    # 2. RSI 分數 (RSI 越高越貪婪)
     delta = sp500_close.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
-    rsi_score = rsi.iloc[-1]
-    
-    # 綜合分數 (VIX 佔 60%, RSI 佔 40%)
-    final_score = (vix_score * 0.6) + (rsi_score * 0.4)
-    return int(final_score), vix_close, rsi_score
+    final = (vix_score * 0.6) + (rsi.iloc[-1] * 0.4)
+    return int(final), vix_close, rsi.iloc[-1]
 
-# --- 5. 繪圖與邏輯 ---
+# --- 5. 新增：歷史市值數據 (精選) ---
+@st.cache_data
+def get_historical_market_cap_data():
+    """提供 1980 - 2025 的歷史市值霸主數據 (單位：十億美元)"""
+    data = [
+        # 1980: 石油與 IBM 時代
+        {"Year": 1980, "Company": "IBM", "Market Cap": 34, "Sector": "Technology"},
+        {"Year": 1980, "Company": "AT&T", "Market Cap": 47, "Sector": "Telecom"},
+        {"Year": 1980, "Company": "Exxon", "Market Cap": 36, "Sector": "Energy"},
+        {"Year": 1980, "Company": "Eastman Kodak", "Market Cap": 10, "Sector": "Consumer"},
+        {"Year": 1980, "Company": "GM", "Market Cap": 15, "Sector": "Industrial"},
 
-def process_data_for_periods(base_df, history_data, market_caps):
-    results = []
-    tickers = base_df['Ticker'].tolist()
-    
-    for ticker in tickers:
-        try:
-            if ticker not in history_data.columns.levels[0]:
-                continue
-            stock_df = history_data[ticker]['Close'].dropna()
-            if len(stock_df) < 2: continue
+        # 1990: 日本泡沫與 PC 崛起
+        {"Year": 1990, "Company": "IBM", "Market Cap": 64, "Sector": "Technology"},
+        {"Year": 1990, "Company": "Exxon", "Market Cap": 62, "Sector": "Energy"},
+        {"Year": 1990, "Company": "NTT (Japan)", "Market Cap": 130, "Sector": "Telecom"},
+        {"Year": 1990, "Company": "GE", "Market Cap": 58, "Sector": "Industrial"},
+        {"Year": 1990, "Company": "Philip Morris", "Market Cap": 45, "Sector": "Consumer"},
 
-            last_price = stock_df.iloc[-1]
-            mkt_cap = market_caps.get(ticker, 0)
-            
-            # 計算漲跌幅
-            chg_1d = stock_df.pct_change(1).iloc[-1] * 100
-            chg_1w = stock_df.pct_change(5).iloc[-1] * 100 if len(stock_df) > 5 else 0
-            chg_1m = stock_df.pct_change(21).iloc[-1] * 100 if len(stock_df) > 21 else 0
-            chg_ytd = ((last_price - stock_df.iloc[0]) / stock_df.iloc[0]) * 100
-            
-            row = base_df[base_df['Ticker'] == ticker].iloc[0]
-            
-            results.append({
-                'Ticker': ticker,
-                'Name': row.get('Name', ticker),
-                'Sector': row['Sector'],
-                'Industry': row['Industry'],
-                'Market Cap': mkt_cap,
-                'Close': last_price,
-                '1D Change': chg_1d,
-                '1W Change': chg_1w,
-                '1M Change': chg_1m,
-                'YTD Change': chg_ytd
-            })
-        except: continue
-    return pd.DataFrame(results)
+        # 2000: 網路泡沫巔峰
+        {"Year": 2000, "Company": "Microsoft", "Market Cap": 586, "Sector": "Technology"},
+        {"Year": 2000, "Company": "GE", "Market Cap": 477, "Sector": "Industrial"},
+        {"Year": 2000, "Company": "Cisco", "Market Cap": 366, "Sector": "Technology"},
+        {"Year": 2000, "Company": "Intel", "Market Cap": 275, "Sector": "Technology"},
+        {"Year": 2000, "Company": "Exxon Mobil", "Market Cap": 272, "Sector": "Energy"},
 
+        # 2010: 金融海嘯後與行動網路前夕
+        {"Year": 2010, "Company": "Exxon Mobil", "Market Cap": 310, "Sector": "Energy"},
+        {"Year": 2010, "Company": "Apple", "Market Cap": 296, "Sector": "Technology"},
+        {"Year": 2010, "Company": "Microsoft", "Market Cap": 238, "Sector": "Technology"},
+        {"Year": 2010, "Company": "PetroChina", "Market Cap": 303, "Sector": "Energy"},
+        {"Year": 2010, "Company": "Berkshire", "Market Cap": 200, "Sector": "Finance"},
+
+        # 2020: 數位巨頭時代
+        {"Year": 2020, "Company": "Apple", "Market Cap": 2250, "Sector": "Technology"},
+        {"Year": 2020, "Company": "Microsoft", "Market Cap": 1680, "Sector": "Technology"},
+        {"Year": 2020, "Company": "Amazon", "Market Cap": 1630, "Sector": "Technology"},
+        {"Year": 2020, "Company": "Alphabet", "Market Cap": 1180, "Sector": "Technology"},
+        {"Year": 2020, "Company": "Saudi Aramco", "Market Cap": 1900, "Sector": "Energy"},
+
+        # 2025 (現在): AI 算力時代
+        {"Year": 2025, "Company": "Apple", "Market Cap": 3500, "Sector": "Technology"},
+        {"Year": 2025, "Company": "Nvidia", "Market Cap": 3400, "Sector": "Technology"},
+        {"Year": 2025, "Company": "Microsoft", "Market Cap": 3200, "Sector": "Technology"},
+        {"Year": 2025, "Company": "Alphabet", "Market Cap": 2100, "Sector": "Technology"},
+        {"Year": 2025, "Company": "Amazon", "Market Cap": 2200, "Sector": "Technology"},
+    ]
+    return pd.DataFrame(data)
+
+# --- 6. 繪圖函數 ---
 def plot_treemap(df, change_col, title, color_range):
     df['Label'] = df.apply(lambda x: f"{x['Name']}\n{x[change_col]:+.2f}%" if 'Tw' in str(x['Ticker']) or x['Name'] != x['Ticker'] else f"{x['Ticker']}\n{x[change_col]:+.2f}%", axis=1)
-    
     fig = px.treemap(
-        df,
-        path=[px.Constant(title), 'Sector', 'Industry', 'Name'],
-        values='Market Cap',
-        color=change_col,
-        color_continuous_scale='RdYlGn', 
-        color_continuous_midpoint=0,
-        range_color=color_range,
+        df, path=[px.Constant(title), 'Sector', 'Industry', 'Name'], values='Market Cap',
+        color=change_col, color_continuous_scale='RdYlGn', color_continuous_midpoint=0, range_color=color_range,
         custom_data=['Ticker', 'Close', change_col]
     )
-    fig.update_traces(
-        textinfo="label+text",
-        textfont=dict(family="Arial Black", size=15), 
-        hovertemplate='<b>%{label}</b><br>代號: %{customdata[0]}<br>股價: %{customdata[1]:.2f}<br>漲跌幅: %{customdata[2]:.2f}%'
-    )
+    fig.update_traces(textinfo="label+text", textfont=dict(family="Arial Black", size=15), 
+                      hovertemplate='<b>%{label}</b><br>代號: %{customdata[0]}<br>股價: %{customdata[1]:.2f}<br>漲跌幅: %{customdata[2]:.2f}%')
     fig.update_layout(height=600, margin=dict(t=40, l=10, r=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_gauge(score):
-    """繪製恐懼與貪婪儀表板"""
     fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = score,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "市場情緒指數 (0=恐慌, 100=貪婪)"},
-        gauge = {
-            'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "black"},
-            'bar': {'color': "darkblue"},
-            'bgcolor': "white",
-            'borderwidth': 2,
-            'bordercolor': "gray",
-            'steps': [
-                {'range': [0, 25], 'color': '#ff4b4b'}, # 恐慌
-                {'range': [25, 45], 'color': '#ffbaba'},
-                {'range': [45, 55], 'color': '#e0e0e0'}, # 中立
-                {'range': [55, 75], 'color': '#baffba'},
-                {'range': [75, 100], 'color': '#008000'} # 貪婪
-            ],
-        }
+        mode = "gauge+number", value = score,
+        domain = {'x': [0, 1], 'y': [0, 1]}, title = {'text': "市場情緒 (Proxy)"},
+        gauge = {'axis': {'range': [None, 100]}, 'bar': {'color': "darkblue"},
+                 'steps': [{'range': [0, 25], 'color': '#ff4b4b'}, {'range': [25, 45], 'color': '#ffbaba'},
+                           {'range': [45, 55], 'color': '#e0e0e0'}, {'range': [55, 75], 'color': '#baffba'},
+                           {'range': [75, 100], 'color': '#008000'}]}
     ))
     fig.update_layout(height=300, margin=dict(t=30, b=10, l=30, r=30))
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 6. 總經頁面渲染 ---
+# --- 7. 頁面渲染邏輯 ---
+
 def render_macro_page():
     with st.spinner("正在計算總經風險指標..."):
         macro_data = get_macro_data()
+        tw_light_data = get_taiwan_light()
         
-        # 準備數據
         vix_series = macro_data['^VIX']['Close'].dropna()
         sp500_series = macro_data['^GSPC']['Close'].dropna()
-        twii_series = macro_data['^TWII']['Close'].dropna()
+        f_g_score, v_val, r_val = calculate_fear_greed(vix_series.iloc[-1], sp500_series)
         
-        current_vix = vix_series.iloc[-1]
-        
-        # 計算恐貪指數
-        f_g_score, v_val, r_val = calculate_fear_greed(current_vix, sp500_series)
-        
-        # --- 版面配置 ---
-        col1, col2 = st.columns([1, 2])
-        
+        col1, col2 = st.columns([1, 1])
         with col1:
             st.subheader("😨 Fear & Greed (模擬)")
             plot_gauge(f_g_score)
-            st.info(f"當前 VIX: {v_val:.2f} | S&P500 RSI: {r_val:.2f}\n\n(指數 < 25 表市場極度恐慌，可能為買點；指數 > 75 表市場過熱)")
-            
-            st.markdown("---")
-            st.subheader("🇹🇼 台灣景氣指標")
-            st.caption("由於國發會無提供即時 API，請參考下方大盤年線趨勢，或點擊按鈕查看官方燈號。")
-            st.link_button("前往國發會查詢最新「景氣對策信號」", "https://index.ndc.gov.tw/n/zh_tw")
+            st.info(f"VIX: {v_val:.2f} | RSI: {r_val:.2f}")
 
         with col2:
-            st.subheader("📉 VIX 波動率趨勢 (過去一年)")
-            # 繪製 VIX 線圖
-            fig_vix = px.line(vix_series, title="CBOE VIX Index")
-            fig_vix.add_hline(y=20, line_dash="dash", line_color="red", annotation_text="警戒線 (20)")
-            fig_vix.update_layout(height=350)
-            st.plotly_chart(fig_vix, use_container_width=True)
-            
-            st.subheader("📈 台灣加權指數 vs 年線 (景氣概況)")
-            # 計算簡單的年線 (240日)
-            tw_df = pd.DataFrame({'Close': twii_series})
-            tw_df['MA240'] = tw_df['Close'].rolling(window=240).mean()
-            
-            fig_tw = px.line(tw_df, y=['Close', 'MA240'], title="TWSE Index vs 240MA (Yearly Trend)")
-            fig_tw.update_traces(line=dict(width=2))
-            fig_tw.update_layout(height=350, legend_title_text='')
-            st.plotly_chart(fig_tw, use_container_width=True)
+            st.subheader("🇹🇼 台灣景氣對策信號")
+            if tw_light_data:
+                score = tw_light_data['score']
+                light_code = tw_light_data['light']
+                date_str = tw_light_data['date']
+                
+                color_map = {'blue': '#2b7de9', 'yellow_blue': '#80b3ff', 'green': '#28a745', 'yellow_red': '#ffc107', 'red': '#dc3545'}
+                css_color = color_map.get(light_code, '#cccccc')
+                if light_code == 'yellow-blue': css_color = '#4da6ff'
+                
+                st.markdown(f"""
+                <div style="display: flex; align-items: center; justify-content: center;">
+                    <div class="light-circle" style="background-color: {css_color};"><div class="score-text">{score}</div></div>
+                </div>
+                <div class="light-text" style="color: {css_color};">{date_str} 景氣分數</div>
+                """, unsafe_allow_html=True)
+            else: st.error("無法連線至國發會")
 
-# --- 7. 主程式 ---
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("📉 VIX 波動率 (1 Year)")
+            fig_vix = px.line(vix_series, title="CBOE VIX Index")
+            fig_vix.add_hline(y=20, line_dash="dash", line_color="red")
+            st.plotly_chart(fig_vix, use_container_width=True)
+        with c2:
+            st.subheader("📊 景氣分數走勢")
+            if tw_light_data:
+                hist_df = tw_light_data['history']
+                fig_light = px.bar(hist_df, x='display_date', y='score', title="NDC Indicator Score", text='score')
+                colors = ['red' if s>=38 else 'orange' if s>=32 else 'green' if s>=23 else '#4da6ff' if s>=17 else 'blue' for s in hist_df['score']]
+                fig_light.update_traces(marker_color=colors)
+                st.plotly_chart(fig_light, use_container_width=True)
+
+def render_history_page():
+    st.subheader("⏳ 全球市值霸主演變史 (1980-2025)")
+    st.caption("觀察重點：1980年代的能源壟斷 -> 2000年網路泡沫 -> 2025年 AI 算力霸權")
+    
+    df_hist = get_historical_market_cap_data()
+    
+    # 動態長條圖競賽
+    fig = px.bar(
+        df_hist, 
+        x="Market Cap", 
+        y="Company", 
+        color="Sector",
+        animation_frame="Year", 
+        range_x=[0, 4000], # 固定 X 軸範圍以便觀察增長
+        orientation='h',
+        text="Market Cap",
+        title="全球前五大市值公司變遷 (單位：十億美元)",
+        color_discrete_map={
+            "Technology": "#1f77b4", # 藍色
+            "Energy": "#d62728",     # 紅色
+            "Industrial": "#7f7f7f", # 灰色
+            "Finance": "#2ca02c",    # 綠色
+            "Telecom": "#ff7f0e",    # 橘色
+            "Consumer": "#9467bd"    # 紫色
+        }
+    )
+    
+    fig.update_layout(
+        xaxis_title="市值 (Billions USD)",
+        yaxis_title="",
+        height=600,
+        showlegend=True,
+        yaxis={'categoryorder':'total ascending'} # 讓Bar自動排序
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    st.info("💡 點擊圖表下方的 'Play' 按鈕，即可播放 45 年來的市值爭霸戰！")
+
+# --- 8. 主程式 ---
 def main():
     if 'last_update' not in st.session_state:
         st.session_state['last_update'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 判斷頁面模式
     if "總經" in market_mode:
         render_macro_page()
+    elif "歷史" in market_mode:
+        render_history_page()
     else:
-        # 股市 Treemap 模式
         with st.spinner(f'正在載入 {market_mode} 數據...'):
             if "S&P 500" in market_mode:
                 base_df = get_sp500_constituents()
@@ -293,35 +338,25 @@ def main():
                 base_df = get_tw_constituents()
                 title_prefix = "TWSE"
 
-            if base_df.empty:
-                st.error("無法取得成分股清單。")
-                return
-                
+            if base_df.empty: st.error("無法取得清單"); return
+            
             tickers_list = base_df['Ticker'].tolist()
             market_caps = fetch_market_caps(tickers_list)
             history_data = fetch_price_history(tickers_list)
             
-            if history_data.empty:
-                st.error("無法取得股價數據。")
-                return
+            if history_data.empty: st.error("無法取得股價"); return
                 
             final_df = process_data_for_periods(base_df, history_data, market_caps)
             
-        if final_df.empty or final_df['Market Cap'].sum() == 0:
-            st.warning("無有效數據可繪圖。")
-            return
-            
+        if final_df.empty: st.warning("無數據"); return
         final_df = final_df[final_df['Market Cap'] > 0]
 
         st.subheader(f"🌞 1 日短期趨勢 ({title_prefix})")
         plot_treemap(final_df, '1D Change', f'{title_prefix} (1 Day)', [-4, 4])
-        
         st.subheader(f"📅 1 週趨勢 ({title_prefix})")
         plot_treemap(final_df, '1W Change', f'{title_prefix} (1 Week)', [-8, 8])
-        
         st.subheader(f"🌕 1 月趨勢 ({title_prefix})")
         plot_treemap(final_df, '1M Change', f'{title_prefix} (1 Month)', [-15, 15])
-        
         st.subheader(f"📅 1 年/長期趨勢 ({title_prefix})")
         plot_treemap(final_df, 'YTD Change', f'{title_prefix} (YTD)', [-40, 40])
     
