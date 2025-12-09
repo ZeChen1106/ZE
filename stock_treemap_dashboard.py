@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------
-# 股市戰情室 (美股 + 台股 + 總經 + 歷史演變) - 旗艦版 (2000-2025 逐年版 + 速度控制)
+# 股市戰情室 (美股 + 台股 + 總經 + 歷史演變) - 旗艦版 (完美競賽圖版)
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -162,9 +162,7 @@ def get_historical_market_cap_data():
     """提供 2000 - 2025 的歷史市值霸主數據 (單位：十億美元)"""
     data = []
     
-    # 定義每年的 Top 5-6 霸主數據 (近似值，還原歷史排行)
-    
-    # 2000-2002: 網路泡沫破裂，微軟 GE 爭霸
+    # 2000-2002: 網路泡沫破裂
     data.extend([
         {"Year": 2000, "Company": "Microsoft", "Market Cap": 586, "Sector": "Technology"},
         {"Year": 2000, "Company": "GE", "Market Cap": 477, "Sector": "Industrial"},
@@ -187,7 +185,6 @@ def get_historical_market_cap_data():
 
     # 2003-2007: 能源與金融的黃金年代
     for y in range(2003, 2008):
-        # 模擬數據：Exxon 穩定上升, Citi 上升
         base_exxon = 250 + (y-2003)*40
         base_ge = 280 + (y-2003)*20
         base_msft = 260 + (y-2003)*5
@@ -196,20 +193,17 @@ def get_historical_market_cap_data():
             {"Year": y, "Company": "GE", "Market Cap": base_ge, "Sector": "Industrial"},
             {"Year": y, "Company": "Microsoft", "Market Cap": base_msft, "Sector": "Technology"},
             {"Year": y, "Company": "Citi", "Market Cap": 250 + (y-2003)*10, "Sector": "Finance"},
-            {"Year": y, "Company": "Gazprom", "Market Cap": 100 + (y-2003)*40, "Sector": "Energy"}, # 俄國能源崛起
+            {"Year": y, "Company": "Gazprom", "Market Cap": 100 + (y-2003)*40, "Sector": "Energy"}, 
         ])
 
-    # 2008: 金融海嘯 (全部縮水，Walmart 防禦性強)
+    # 2008-2011: 金融海嘯到復甦
     data.extend([
         {"Year": 2008, "Company": "ExxonMobil", "Market Cap": 406, "Sector": "Energy"},
         {"Year": 2008, "Company": "Walmart", "Market Cap": 218, "Sector": "Consumer"},
         {"Year": 2008, "Company": "Procter & Gamble", "Market Cap": 185, "Sector": "Consumer"},
         {"Year": 2008, "Company": "Microsoft", "Market Cap": 170, "Sector": "Technology"},
-        {"Year": 2008, "Company": "ICBC (China)", "Market Cap": 175, "Sector": "Finance"}, # 中國銀行崛起
-    ])
+        {"Year": 2008, "Company": "ICBC", "Market Cap": 175, "Sector": "Finance"}, 
 
-    # 2009-2011: 復甦與行動網路前夕 (Apple 進入視野)
-    data.extend([
         {"Year": 2009, "Company": "PetroChina", "Market Cap": 350, "Sector": "Energy"},
         {"Year": 2009, "Company": "ExxonMobil", "Market Cap": 320, "Sector": "Energy"},
         {"Year": 2009, "Company": "Microsoft", "Market Cap": 270, "Sector": "Technology"},
@@ -217,7 +211,7 @@ def get_historical_market_cap_data():
         {"Year": 2009, "Company": "Apple", "Market Cap": 190, "Sector": "Technology"},
 
         {"Year": 2010, "Company": "ExxonMobil", "Market Cap": 369, "Sector": "Energy"},
-        {"Year": 2010, "Company": "Apple", "Market Cap": 296, "Sector": "Technology"}, # Apple 爬升
+        {"Year": 2010, "Company": "Apple", "Market Cap": 296, "Sector": "Technology"}, 
         {"Year": 2010, "Company": "PetroChina", "Market Cap": 303, "Sector": "Energy"},
         {"Year": 2010, "Company": "Microsoft", "Market Cap": 238, "Sector": "Technology"},
         {"Year": 2010, "Company": "BHP Billiton", "Market Cap": 210, "Sector": "Energy"},
@@ -229,14 +223,12 @@ def get_historical_market_cap_data():
         {"Year": 2011, "Company": "Microsoft", "Market Cap": 220, "Sector": "Technology"},
     ])
 
-    # 2012-2016: Apple 稱霸，Google Amazon 追趕
+    # 2012-2016: Apple 稱霸
     for y in range(2012, 2017):
-        # Apple 震盪向上
         apple_cap = 400 + (y-2012)*50
-        exxon_cap = 400 - (y-2012)*20 # 能源衰退
+        exxon_cap = 400 - (y-2012)*20 
         goog_cap = 250 + (y-2012)*50
         msft_cap = 250 + (y-2012)*30
-        
         data.extend([
             {"Year": y, "Company": "Apple", "Market Cap": apple_cap, "Sector": "Technology"},
             {"Year": y, "Company": "ExxonMobil", "Market Cap": exxon_cap, "Sector": "Energy"},
@@ -245,7 +237,7 @@ def get_historical_market_cap_data():
             {"Year": y, "Company": "Berkshire", "Market Cap": 250 + (y-2012)*20, "Sector": "Finance"},
         ])
 
-    # 2017-2019: 科技巨頭時代 (Mag 4)
+    # 2017-2019: 科技巨頭時代
     data.extend([
         {"Year": 2017, "Company": "Apple", "Market Cap": 860, "Sector": "Technology"},
         {"Year": 2017, "Company": "Alphabet", "Market Cap": 720, "Sector": "Technology"},
@@ -259,7 +251,7 @@ def get_historical_market_cap_data():
         {"Year": 2018, "Company": "Alphabet", "Market Cap": 720, "Sector": "Technology"},
         {"Year": 2018, "Company": "Berkshire", "Market Cap": 490, "Sector": "Finance"},
 
-        {"Year": 2019, "Company": "Saudi Aramco", "Market Cap": 1880, "Sector": "Energy"}, # IPO
+        {"Year": 2019, "Company": "Saudi Aramco", "Market Cap": 1880, "Sector": "Energy"}, 
         {"Year": 2019, "Company": "Apple", "Market Cap": 1200, "Sector": "Technology"},
         {"Year": 2019, "Company": "Microsoft", "Market Cap": 1150, "Sector": "Technology"},
         {"Year": 2019, "Company": "Alphabet", "Market Cap": 920, "Sector": "Technology"},
@@ -284,7 +276,7 @@ def get_historical_market_cap_data():
         {"Year": 2022, "Company": "Saudi Aramco", "Market Cap": 1900, "Sector": "Energy"},
         {"Year": 2022, "Company": "Microsoft", "Market Cap": 1780, "Sector": "Technology"},
         {"Year": 2022, "Company": "Alphabet", "Market Cap": 1100, "Sector": "Technology"},
-        {"Year": 2022, "Company": "Amazon", "Market Cap": 850, "Sector": "Technology"}, # 修正
+        {"Year": 2022, "Company": "Amazon", "Market Cap": 850, "Sector": "Technology"}, 
     ])
 
     # 2023-2025: AI 時代
@@ -293,16 +285,16 @@ def get_historical_market_cap_data():
         {"Year": 2023, "Company": "Microsoft", "Market Cap": 2790, "Sector": "Technology"},
         {"Year": 2023, "Company": "Saudi Aramco", "Market Cap": 2100, "Sector": "Energy"},
         {"Year": 2023, "Company": "Alphabet", "Market Cap": 1700, "Sector": "Technology"},
-        {"Year": 2023, "Company": "Nvidia", "Market Cap": 1200, "Sector": "Technology"}, # NVDA 入榜
+        {"Year": 2023, "Company": "Nvidia", "Market Cap": 1200, "Sector": "Technology"}, 
 
         {"Year": 2024, "Company": "Apple", "Market Cap": 3300, "Sector": "Technology"},
         {"Year": 2024, "Company": "Microsoft", "Market Cap": 3200, "Sector": "Technology"},
-        {"Year": 2024, "Company": "Nvidia", "Market Cap": 2900, "Sector": "Technology"}, # NVDA 飆升
+        {"Year": 2024, "Company": "Nvidia", "Market Cap": 2900, "Sector": "Technology"}, 
         {"Year": 2024, "Company": "Alphabet", "Market Cap": 2100, "Sector": "Technology"},
         {"Year": 2024, "Company": "Amazon", "Market Cap": 1900, "Sector": "Technology"},
 
-        {"Year": 2025, "Company": "Apple", "Market Cap": 3550, "Sector": "Technology"}, # 預測/現況
-        {"Year": 2025, "Company": "Nvidia", "Market Cap": 3450, "Sector": "Technology"}, # NVDA 爭霸
+        {"Year": 2025, "Company": "Apple", "Market Cap": 3650, "Sector": "Technology"}, 
+        {"Year": 2025, "Company": "Nvidia", "Market Cap": 3600, "Sector": "Technology"}, 
         {"Year": 2025, "Company": "Microsoft", "Market Cap": 3250, "Sector": "Technology"},
         {"Year": 2025, "Company": "Alphabet", "Market Cap": 2200, "Sector": "Technology"},
         {"Year": 2025, "Company": "Amazon", "Market Cap": 2250, "Sector": "Technology"},
@@ -415,21 +407,22 @@ def render_history_page():
     st.subheader("⏳ 全球市值霸主演變史 (2000-2025)")
     st.caption("動畫控制：請在上方輸入框調整播放速度 (數字越大越慢)。")
     
-    # 1. 增加速度控制輸入框
     col_input, col_dummy = st.columns([1, 4])
     with col_input:
-        speed_sec = st.number_input("播放間隔 (秒)", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
+        speed_sec = st.number_input("播放間隔 (秒)", min_value=0.1, max_value=5.0, value=0.5, step=0.1)
     
     df_hist = get_historical_market_cap_data()
     
-    # 2. 建立動畫圖表
+    # 關鍵：確保每一年的數據是按照市值排序的，這樣圖表才會自動上下交換位置
+    df_hist = df_hist.sort_values(by=['Year', 'Market Cap'], ascending=[True, True])
+
     fig = px.bar(
         df_hist, 
         x="Market Cap", 
         y="Company", 
         color="Sector",
         animation_frame="Year", 
-        range_x=[0, 4000], 
+        range_x=[0, 4200], # 設定到 4200 以容納 Nvidia/Apple 未來增長，避免爆框
         orientation='h',
         text="Market Cap",
         title="全球前五大市值公司變遷 (單位：十億美元)",
@@ -439,12 +432,12 @@ def render_history_page():
         }
     )
     
-    # 3. 套用使用者設定的速度 (轉換為毫秒)
     fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = int(speed_sec * 1000)
     
+    # 這裡的 categoryorder 是實現「競賽效果」的關鍵
     fig.update_layout(
         xaxis_title="市值 (Billions USD)", yaxis_title="", height=600, showlegend=True,
-        yaxis={'categoryorder':'total ascending'}
+        yaxis={'categoryorder':'total ascending'} # 讓最大的 Bar 永遠在最上面 (或下面)
     )
     
     st.plotly_chart(fig, use_container_width=True)
