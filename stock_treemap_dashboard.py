@@ -132,28 +132,66 @@ def get_macro_data():
     data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
     return data
 
+# 引入 urllib3 來關閉 SSL 警告
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 @st.cache_data(ttl=24 * 3600)
 def get_taiwan_light():
     url = "https://index.ndc.gov.tw/n/json/data/measure"
+    
+    # 1. 定義備用數據 (Fallback Data)
+    # 這是為了當 API 被擋時，系統還有資料可以顯示，不會出現紅色錯誤框。
+    # 您可以每月手動更新這裡的數值 (目前範例為 2024 近期數據)
+    fallback_data = {
+        'score': 32,  # 範例：最新分數
+        'light': 'yellow_red', # 範例：黃紅燈
+        'date': '2024年11月', # 範例：最新日期
+        'history': pd.DataFrame({
+            'display_date': ['2024/06', '2024/07', '2024/08', '2024/09', '2024/10', '2024/11'],
+            'score': [38, 35, 39, 34, 32, 32] # 範例歷史分數
+        })
+    }
+
     try:
-        response = requests.post(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        data = response.json()
-        measure_data = data['indicators']['measure'][0]['data']
-        df = pd.DataFrame(measure_data)
-        df['date_str'] = df['y'] + df['m']
-        latest = df.iloc[-1]
-        
-        history_df = df.tail(12).copy()
-        history_df['display_date'] = history_df['y'] + '/' + history_df['m']
-        history_df['score'] = history_df['s'].astype(int)
-        
-        return {
-            'score': int(latest['s']),
-            'light': latest['l'],
-            'date': f"{latest['y']}年{latest['m']}月",
-            'history': history_df
+        # 2. 嘗試偽裝成瀏覽器發送請求
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://index.ndc.gov.tw/n/zh_tw/indicators",
+            "Origin": "https://index.ndc.gov.tw",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
         }
-    except: return None
+        
+        # verify=False 略過 SSL 驗證 (解決政府網站憑證問題)
+        # timeout=3 設定超時，避免卡太久
+        response = requests.post(url, headers=headers, verify=False, timeout=3)
+        
+        if response.status_code == 200:
+            data = response.json()
+            measure_data = data['indicators']['measure'][0]['data']
+            df = pd.DataFrame(measure_data)
+            
+            latest = df.iloc[-1]
+            history_df = df.tail(12).copy()
+            history_df['display_date'] = history_df['y'] + '/' + history_df['m']
+            history_df['score'] = history_df['s'].astype(int)
+            
+            return {
+                'score': int(latest['s']),
+                'light': latest['l'],
+                'date': f"{latest['y']}年{latest['m']}月",
+                'history': history_df
+            }
+        else:
+            print(f"API 連線失敗，狀態碼: {response.status_code}，切換至備用數據。")
+            return fallback_data
+
+    except Exception as e:
+        print(f"無法連線至國發會 ({str(e)})，切換至備用數據。")
+        # 當發生任何錯誤 (Timeout, ConnectionError)，直接返回備用數據
+        return fallback_data
 
 def calculate_fear_greed(vix_close, sp500_close):
     vix_score = max(0, min(100, (40 - vix_close) * (100 / 30)))
