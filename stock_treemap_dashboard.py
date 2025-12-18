@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------
-# 股市戰情室 - 極速穩定版 (修正 SyntaxError)
+# 股市戰情室 - 旗艦版 (含資金籌碼手動輸入與自動分析)
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -22,6 +22,16 @@ st.markdown("""
 <style>
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
     h3 { margin-top: 2rem; border-bottom: 2px solid #f0f2f6; padding-bottom: 0.5rem; font-family: 'Arial Black', sans-serif; }
+    .metric-card {
+        background-color: #f9f9f9;
+        border-left: 5px solid #2b7de9;
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 10px;
+    }
+    .metric-title { font-size: 16px; color: #555; }
+    .metric-value { font-size: 24px; font-weight: bold; color: #333; }
+    .stLinkButton { text-decoration: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -32,6 +42,8 @@ market_mode = st.sidebar.radio(
     [
         "🇺🇸 美股 S&P 500", 
         "🇹🇼 台股權值股 (TWSE)", 
+        "💰 資金與籌碼 (Liquidity)",
+        "🚢 原物料與航運 (Commodities)",
         "📉 總經與風險指標 (Macro)"
     ]
 )
@@ -89,10 +101,8 @@ def get_sp500_constituents():
     except Exception:
         return pd.DataFrame()
 
-# 使用多執行緒平行抓取市值
 def fetch_single_cap(ticker):
     try:
-        # 修正處：補上 .Ticker(ticker)
         info = yf.Ticker(ticker).fast_info
         return ticker, info['market_cap']
     except:
@@ -115,10 +125,16 @@ def fetch_price_history(tickers, period="1y"):
     except Exception:
         return pd.DataFrame()
 
-# --- 4. 總經數據獲取 (僅剩 VIX) ---
+# --- 4. 總經/原物料/資金 數據獲取 ---
 @st.cache_data(ttl=3600)
 def get_macro_data():
     tickers = ["^VIX", "^GSPC"]
+    data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, progress=False)
+    return data
+
+@st.cache_data(ttl=3600)
+def get_commodity_data():
+    tickers = ["BDRY", "DBC", "HG=F", "CL=F", "GC=F"]
     data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
     return data
 
@@ -132,11 +148,10 @@ def calculate_fear_greed(vix_close, sp500_close):
     final = (vix_score * 0.6) + (rsi.iloc[-1] * 0.4)
     return int(final), vix_close, rsi.iloc[-1]
 
-# --- 5. 核心計算邏輯 ---
+# --- 5. 核心計算邏輯 (股票) ---
 def process_data_for_periods(base_df, history_data, market_caps):
     results = []
     tickers = base_df['Ticker'].tolist()
-    
     valid_tickers = [t for t in tickers if t in history_data.columns.levels[0]]
     
     for ticker in valid_tickers:
@@ -159,7 +174,6 @@ def process_data_for_periods(base_df, history_data, market_caps):
                 '1D Change': chg_1d, '1W Change': chg_1w, '1M Change': chg_1m, 'YTD Change': chg_ytd
             })
         except: continue
-        
     return pd.DataFrame(results)
 
 # --- 6. 繪圖函數 ---
@@ -195,6 +209,12 @@ def plot_gauge(score):
     fig.update_layout(height=300, margin=dict(t=30, b=10, l=30, r=30))
     st.plotly_chart(fig, use_container_width=True)
 
+def plot_line_chart(data, title, color):
+    fig = px.line(data, title=title)
+    fig.update_traces(line_color=color, line_width=2)
+    fig.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None)
+    st.plotly_chart(fig, use_container_width=True)
+
 # --- 7. 頁面渲染邏輯 ---
 
 def render_macro_page():
@@ -218,29 +238,170 @@ def render_macro_page():
         with col2:
             st.subheader("🇹🇼 台灣景氣對策信號")
             st.info("由於國發會連線限制，請點擊下方按鈕前往官方網站查看最新數據。")
-            
-            # 使用 Streamlit 原生 link_button
             st.link_button("👉 國發會 - 景氣指標查詢系統", "https://index.ndc.gov.tw/n/zh_tw/indicators")
-            
             st.markdown("""
-            <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                <h4>💡 燈號意義說明：</h4>
-                <ul>
-                    <li><span style='color: #dc3545; font-weight: bold;'>🔴 紅燈</span>：景氣熱絡 (38-45分)</li>
-                    <li><span style='color: #ffc107; font-weight: bold;'>🟠 黃紅燈</span>：景氣轉向 (32-37分)</li>
-                    <li><span style='color: #28a745; font-weight: bold;'>🟢 綠燈</span>：景氣穩定 (23-31分)</li>
-                    <li><span style='color: #80b3ff; font-weight: bold;'>🔵 黃藍燈</span>：景氣轉向 (17-22分)</li>
-                    <li><span style='color: #2b7de9; font-weight: bold;'>🔵 藍燈</span>：景氣低迷 (9-16分)</li>
-                </ul>
+            <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; font-size: 0.9em;">
+                <b>🔴紅燈</b>: 熱絡 | <b>🟢綠燈</b>: 穩定 | <b>🔵藍燈</b>: 低迷
             </div>
             """, unsafe_allow_html=True)
 
         st.markdown("---")
-        # 只保留 VIX 線圖，且佔滿全寬
         st.subheader("📉 VIX 波動率 (1 Year)")
         fig_vix = px.line(vix_series, title="CBOE VIX Index")
         fig_vix.add_hline(y=20, line_dash="dash", line_color="red")
         st.plotly_chart(fig_vix, use_container_width=True)
+
+def render_commodity_page():
+    st.caption("註：BDI 與 SCFI 為交易所專有數據，此處使用相關性高度連動的 ETF 或期貨作為即時走勢參考。")
+    with st.spinner("正在獲取原物料行情..."):
+        comm_data = get_commodity_data()
+        
+        st.markdown("### 🚢 航運指標 (Shipping)")
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            if 'BDRY' in comm_data.columns.levels[0]:
+                data = comm_data['BDRY']['Close'].dropna()
+                plot_line_chart(data, "BDI 替代指標 (BDRY ETF) - 散裝航運", "#1f77b4")
+        with c2:
+            st.markdown("""
+            <div class="metric-card">
+                <div class="metric-title">BDI 波羅的海乾散貨</div>
+                <div class="metric-value">原物料運價</div>
+                <div style="font-size:12px; color:#666; margin-top:5px;">全球經濟領先指標</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.link_button("📊 Investing.com (BDI)", "https://www.investing.com/indices/baltic-dry")
+            st.link_button("📦 上海航交所 (SCFI)", "https://en.sse.net.cn/indices/scfinew.jsp")
+
+        st.markdown("---")
+        st.markdown("### 🛢️ 原物料與能源 (Commodities)")
+        c3, c4 = st.columns([1, 1])
+        with c3:
+            if 'DBC' in comm_data.columns.levels[0]:
+                data = comm_data['DBC']['Close'].dropna()
+                plot_line_chart(data, "CRB 替代指標 (DBC ETF)", "#ff7f0e")
+        with c4:
+            if 'CL=F' in comm_data.columns.levels[0]:
+                data = comm_data['CL=F']['Close'].dropna()
+                plot_line_chart(data, "紐約輕原油 (WTI)", "#d62728")
+        
+        st.markdown("---")
+        st.markdown("### 🏗️ 工業金屬 (LME Metals)")
+        c5, c6 = st.columns([1, 1])
+        with c5:
+            if 'HG=F' in comm_data.columns.levels[0]:
+                data = comm_data['HG=F']['Close'].dropna()
+                plot_line_chart(data, "銅 (Copper) - 製造業風向球", "#2ca02c")
+                st.link_button("🔗 LME 官網", "https://www.lme.com/")
+        with c6:
+            if 'GC=F' in comm_data.columns.levels[0]:
+                data = comm_data['GC=F']['Close'].dropna()
+                plot_line_chart(data, "黃金 (Gold) - 避險情緒", "#bcbd22")
+
+def render_liquidity_page():
+    st.header("💰 資金量體與籌碼戰情室")
+    st.caption("結合自動化量價分析與手動輸入的關鍵籌碼數據，全方位評估市場水位。")
+
+    # --- Section 1: 手動輸入區 (使用 Expander 收納) ---
+    with st.expander("🛠️ 關鍵籌碼數據輸入 (請點此展開輸入)", expanded=True):
+        st.markdown("由於 M1B、融資維持率等數據無法自動抓取，請手動輸入最新數值以進行分析。")
+        
+        col_in1, col_in2, col_in3 = st.columns(3)
+        
+        with col_in1:
+            st.subheader("🇹🇼 台灣貨幣供給")
+            st.link_button("🔍 查詢央行 M1B/M2", "https://www.cbc.gov.tw/tw/cp-537-25624-F4C5E-1.html")
+            m1b_val = st.number_input("M1B 年增率 (%)", value=5.24, step=0.01, format="%.2f")
+            m2_val = st.number_input("M2 年增率 (%)", value=5.44, step=0.01, format="%.2f")
+        
+        with col_in2:
+            st.subheader("🇹🇼 台股信用交易")
+            st.link_button("🔍 查詢融資維持率", "https://www.twse.com.tw/zh/page/trading/exchange/MI_MARGN.html")
+            margin_ratio = st.number_input("融資維持率 (%)", value=169.39, step=0.1, format="%.2f")
+            margin_balance = st.number_input("融資餘額 (億元)", value=3321.0, step=1.0)
+            
+        with col_in3:
+            st.subheader("🇺🇸 美股槓桿")
+            st.link_button("🔍 查詢 FINRA Margin Debt", "https://www.finra.org/investors/insight/margin-stats")
+            us_margin_debt = st.number_input("Margin Debt (兆美元)", value=1.21, step=0.01, format="%.2f")
+
+    # --- Section 2: 手動數據分析結果 ---
+    st.markdown("---")
+    st.subheader("📊 籌碼水位診斷")
+    
+    col_res1, col_res2, col_res3 = st.columns(3)
+    
+    with col_res1:
+        gap = m1b_val - m2_val
+        status = "🔴 死亡交叉 (資金緊縮)" if gap < 0 else "🟢 黃金交叉 (資金充沛)"
+        delta_color = "normal" if gap > 0 else "inverse"
+        
+        st.metric("資金剪刀差 (M1B - M2)", f"{gap:.2f}%", delta=gap, delta_color=delta_color)
+        st.info(f"狀態：{status}")
+        if gap < 0 and gap > -0.5:
+            st.caption("💡 差距縮小中，留意翻正訊號！")
+
+    with col_res2:
+        status_margin = "🟢 安全水位"
+        if margin_ratio < 140: status_margin = "🔴 斷頭風險高"
+        elif margin_ratio < 160: status_margin = "🟡 警戒水位 (整戶維持率偏低)"
+        elif margin_ratio > 175: status_margin = "🔥 過熱 (散戶大開槓桿)"
+        
+        st.metric("融資維持率", f"{margin_ratio}%")
+        st.info(f"評估：{status_margin}")
+
+    with col_res3:
+        st.metric("美股融資餘額", f"${us_margin_debt}T")
+        st.info("評估：處於歷史相對高檔，顯示市場槓桿意願強。")
+
+    # --- Section 3: 自動化量價分析 (OBV + VIX) ---
+    st.markdown("---")
+    st.subheader("🌊 自動化量價趨勢 (S&P 500)")
+    
+    with st.spinner("正在計算 OBV 與 VIX..."):
+        macro_data = get_macro_data() # 取得 2 年數據
+        sp500 = macro_data['^GSPC'].copy()
+        vix = macro_data['^VIX'].copy()
+
+        # 計算 OBV
+        sp500['Daily_Ret'] = sp500['Close'].pct_change()
+        sp500['Direction'] = np.where(sp500['Daily_Ret'] >= 0, 1, -1)
+        sp500['OBV'] = (sp500['Volume'] * sp500['Direction']).cumsum()
+
+        # 計算 RSI
+        delta = sp500['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        sp500['RSI'] = 100 - (100 / (1 + rs))
+
+        col_chart1, col_chart2 = st.columns([2, 1])
+        
+        with col_chart1:
+            # 繪製標準化比較圖
+            norm_price = (sp500['Close'] - sp500['Close'].min()) / (sp500['Close'].max() - sp500['Close'].min())
+            norm_obv = (sp500['OBV'] - sp500['OBV'].min()) / (sp500['OBV'].max() - sp500['OBV'].min())
+            
+            df_chart = pd.DataFrame({
+                'S&P 500 走勢': norm_price,
+                'OBV 資金動能': norm_obv
+            })
+            st.line_chart(df_chart)
+            st.caption("藍線(股價)與橘線(資金)若出現背離(方向不同)，通常是變盤前兆。")
+
+        with col_chart2:
+            latest_rsi = sp500['RSI'].iloc[-1]
+            latest_vix = vix['Close'].iloc[-1]
+            
+            st.metric("RSI (強弱指標)", f"{latest_rsi:.1f}")
+            st.metric("VIX (恐慌指數)", f"{latest_vix:.1f}")
+            
+            if latest_rsi > 75 and latest_vix < 13:
+                st.error("🚨 資金極度過熱！")
+            elif latest_rsi < 30 and latest_vix > 30:
+                st.success("🟢 資金恐慌築底")
+            else:
+                st.warning("🟡 資金情緒中性")
 
 # --- 8. 主程式 ---
 def main():
@@ -249,6 +410,10 @@ def main():
 
     if "總經" in market_mode:
         render_macro_page()
+    elif "原物料" in market_mode:
+        render_commodity_page()
+    elif "資金" in market_mode:
+        render_liquidity_page()
     else:
         with st.spinner(f'正在載入 {market_mode} 數據...'):
             if "S&P 500" in market_mode:
@@ -259,17 +424,12 @@ def main():
                 title_prefix = "TWSE"
 
             if base_df.empty: st.error("無法取得清單"); return
-            
             tickers_list = base_df['Ticker'].tolist()
             
-            # 使用多執行緒加速市值獲取
             market_caps = fetch_market_caps(tickers_list)
-            
-            # 獲取股價歷史
             history_data = fetch_price_history(tickers_list)
             
             if history_data.empty: st.error("無法取得股價"); return
-                
             final_df = process_data_for_periods(base_df, history_data, market_caps)
             
         if final_df.empty: st.warning("無數據"); return
