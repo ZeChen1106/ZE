@@ -154,6 +154,15 @@ def get_commodity_data():
 def get_stock_data(ticker, period="2y"):
     """獲取單一股票的詳細數據"""
     data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+    
+    # yfinance 有時會回傳 MultiIndex (Price, Ticker)，需轉為單層 Index 避免錯誤
+    if isinstance(data.columns, pd.MultiIndex):
+        try:
+            # 嘗試取得 Price 層級 (Open, Close 等)
+            data.columns = data.columns.get_level_values(0)
+        except Exception:
+            pass # 如果失敗則維持原狀，避免崩潰
+
     return data
 
 def check_ticker_validity(ticker):
