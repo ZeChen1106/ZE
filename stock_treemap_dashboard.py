@@ -1,15 +1,16 @@
 # ----------------------------------------------------------------------
-# 股市戰情室 - 旗艦版 (含資金籌碼手動輸入與自動分析)
+# 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # ----------------------------------------------------------------------
 
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- 1. Streamlit 頁面設定 ---
 st.set_page_config(
@@ -32,6 +33,16 @@ st.markdown("""
     .metric-title { font-size: 16px; color: #555; }
     .metric-value { font-size: 24px; font-weight: bold; color: #333; }
     .stLinkButton { text-decoration: none; }
+    .analysis-box {
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+        padding: 15px;
+        background-color: #ffffff;
+        margin-bottom: 15px;
+    }
+    .bullish { color: #008000; font-weight: bold; }
+    .bearish { color: #ff4b4b; font-weight: bold; }
+    .neutral { color: #ffa500; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -42,6 +53,7 @@ market_mode = st.sidebar.radio(
     [
         "🇺🇸 美股 S&P 500", 
         "🇹🇼 台股權值股 (TWSE)", 
+        "🔎 個股技術戰略 (Stock Strategy)",  # 更新名稱
         "💰 資金與籌碼 (Liquidity)",
         "🚢 原物料與航運 (Commodities)",
         "📉 總經與風險指標 (Macro)"
@@ -138,6 +150,20 @@ def get_commodity_data():
     data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
     return data
 
+@st.cache_data(ttl=3600)
+def get_stock_data(ticker, period="2y"):
+    """獲取單一股票的詳細數據"""
+    data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+    return data
+
+def check_ticker_validity(ticker):
+    """檢查代號是否有效 (嘗試抓取 5 天數據)"""
+    try:
+        data = yf.download(ticker, period="5d", progress=False)
+        return not data.empty
+    except:
+        return False
+
 def calculate_fear_greed(vix_close, sp500_close):
     vix_score = max(0, min(100, (40 - vix_close) * (100 / 30)))
     delta = sp500_close.diff()
@@ -148,7 +174,37 @@ def calculate_fear_greed(vix_close, sp500_close):
     final = (vix_score * 0.6) + (rsi.iloc[-1] * 0.4)
     return int(final), vix_close, rsi.iloc[-1]
 
-# --- 5. 核心計算邏輯 (股票) ---
+# --- 5. 技術指標計算 ---
+def calculate_indicators(df):
+    """計算 MA, RSI, MACD, Bollinger Bands"""
+    df = df.copy()
+    
+    # Moving Averages (PDF Page 8)
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA50'] = df['Close'].rolling(window=50).mean()
+    df['MA200'] = df['Close'].rolling(window=200).mean()
+    
+    # RSI (PDF Page 9)
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # MACD (PDF Page 9)
+    exp12 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = exp12 - exp26
+    df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
+    
+    # Bollinger Bands (用於輔助判斷波動與壓力支撐)
+    df['BB_Upper'] = df['MA20'] + (df['Close'].rolling(window=20).std() * 2)
+    df['BB_Lower'] = df['MA20'] - (df['Close'].rolling(window=20).std() * 2)
+    
+    return df
+
+# --- 6. 核心計算邏輯 (股票) ---
 def process_data_for_periods(base_df, history_data, market_caps):
     results = []
     tickers = base_df['Ticker'].tolist()
@@ -176,7 +232,7 @@ def process_data_for_periods(base_df, history_data, market_caps):
         except: continue
     return pd.DataFrame(results)
 
-# --- 6. 繪圖函數 ---
+# --- 7. 繪圖函數 ---
 def plot_treemap(df, change_col, title, color_range):
     df['Label'] = np.where(
         df['Ticker'].str.contains('TW') | (df['Name'] != df['Ticker']),
@@ -215,7 +271,188 @@ def plot_line_chart(data, title, color):
     fig.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None)
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 7. 頁面渲染邏輯 ---
+def plot_tech_chart(df, ticker, title):
+    """繪製包含 MA, Volume, RSI, MACD 的互動式圖表"""
+    # 創建子圖結構 (主圖, 成交量, RSI, MACD)
+    fig = make_subplots(
+        rows=4, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.03, 
+        row_heights=[0.5, 0.15, 0.15, 0.2],
+        subplot_titles=(f"{title} 價格趨勢 (含 MA & Bollinger)", "成交量 (Volume)", "RSI 強弱指標", "MACD 動能")
+    )
+
+    # 1. 主圖：K線 + MA
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='orange', width=1), name='MA20 (月線)'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='blue', width=1.5), name='MA50 (季線)'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='red', width=2), name='MA200 (年線)'), row=1, col=1)
+    
+    # 布林通道
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='gray', width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='gray', width=0), fill='tonexty', fillcolor='rgba(128,128,128,0.1)', name='BB Band'), row=1, col=1)
+
+    # 2. 成交量
+    colors = ['green' if o >= c else 'red' for o, c in zip(df['Open'], df['Close'])]
+    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
+
+    # 3. RSI
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=2), name='RSI'), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1) # 超買
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1) # 超賣
+
+    # 4. MACD
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='blue', width=1.5), name='MACD'), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], line=dict(color='orange', width=1.5), name='Signal'), row=4, col=1)
+    colors_hist = ['green' if v >= 0 else 'red' for v in df['MACD_Hist']]
+    fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors_hist, name='Histogram'), row=4, col=1)
+
+    # 設定
+    fig.update_layout(
+        height=900, 
+        xaxis_rangeslider_visible=False,
+        title_text=f"{ticker} 技術分析儀表板",
+        hovermode='x unified'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- 8. 頁面渲染邏輯 ---
+
+def render_stock_strategy_page():
+    st.header("🔎 個股技術戰略分析 (PDF 規則實戰)")
+    st.caption("輸入代號查詢美股或台股，系統將依據《Technical Analysis Profitability Rules》進行趨勢、動能與風險檢測。")
+
+    # --- 輸入區塊 ---
+    with st.container():
+        col_input1, col_input2, col_btn = st.columns([3, 1, 1])
+        with col_input1:
+            ticker_input = st.text_input("輸入股票代號 (例如: NVDA, AAPL, 2330.TW, 0050.TW)", value="AAPL")
+        with col_input2:
+            timeframe = st.selectbox("分析週期", ["1y", "2y", "5y"], index=0)
+        with col_btn:
+            st.write("") # Spacer for alignment
+            st.write("") 
+            analyze_btn = st.button("🚀 開始分析", type="primary")
+
+    # 若按下按鈕或已有輸入，且代號不為空
+    if analyze_btn or (ticker_input and ticker_input != ""):
+        ticker = ticker_input.upper().strip()
+        
+        # --- 步驟 1: 驗證代號 ---
+        with st.spinner(f"正在連線交易所查詢 {ticker} ..."):
+            is_valid = check_ticker_validity(ticker)
+            
+        if not is_valid:
+            st.error(f"❌ 查無代號：{ticker}")
+            st.info("💡 提示：台股請加上 .TW (例如 2330.TW)，美股直接輸入代號 (例如 AAPL)。請檢查拼字或網路連線。")
+            return
+
+        # --- 步驟 2: 獲取詳細數據與計算 ---
+        with st.spinner(f"✅ 代號確認！正在計算 {ticker} 技術指標..."):
+            df = get_stock_data(ticker, period=timeframe)
+            if df.empty or len(df) < 50: # 至少要有足夠數據算 MA50
+                st.warning("⚠️ 數據不足，無法進行完整技術分析 (可能是新上市股票)。")
+                return
+            
+            df = calculate_indicators(df)
+            last_row = df.iloc[-1]
+            prev_row = df.iloc[-2]
+
+            # --- A. 狀態儀表板 ---
+            st.markdown("### 1. 即時技術狀態總覽")
+            m1, m2, m3, m4 = st.columns(4)
+            
+            # 價格與漲跌
+            chg = (last_row['Close'] - prev_row['Close']) / prev_row['Close'] * 100
+            m1.metric(f"{ticker} 收盤價", f"${last_row['Close']:.2f}", f"{chg:.2f}%")
+            
+            # 趨勢判斷 (Dow Theory / MA)
+            trend_status = "盤整 / 不明"
+            if last_row['Close'] > last_row['MA200']:
+                if last_row['MA50'] > last_row['MA200']:
+                    trend_status = "🚀 長期多頭 (Bull Market)"
+                else:
+                    trend_status = "⚠️ 多頭回調 (Correction)"
+            else:
+                trend_status = "🐻 長期空頭 (Bear Market)"
+            m2.metric("主要趨勢 (Primary Trend)", trend_status)
+
+            # RSI 動能
+            rsi_val = last_row['RSI']
+            rsi_status = "中性"
+            if rsi_val > 70: rsi_status = "🔴 超買 (Overbought)"
+            elif rsi_val < 30: rsi_status = "🟢 超賣 (Oversold)"
+            m3.metric("RSI 動能", f"{rsi_val:.1f}", rsi_status)
+            
+            # MACD 信號
+            macd_val = last_row['MACD_Hist']
+            macd_sig = "多方控盤" if macd_val > 0 else "空方控盤"
+            m4.metric("MACD 動能", f"{macd_val:.2f}", macd_sig)
+
+            # --- B. 圖表區域 ---
+            st.markdown("---")
+            plot_tech_chart(df, ticker, ticker)
+
+            # --- C. 策略檢查清單 (PDF Page 14) ---
+            st.markdown("---")
+            st.subheader("📋 交易決策檢查清單 (Checklist)")
+            
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                st.markdown("#### 🔍 趨勢與型態 (Chart Analysis)")
+                
+                # 1. 均線排列
+                ma_bullish = last_row['MA20'] > last_row['MA50'] > last_row['MA200']
+                st.markdown(f"- **均線排列 (MA Alignment)**: {'✅ 多頭排列' if ma_bullish else '⚠️ 糾結或空頭排列'}")
+                st.caption("PDF 重點：確認趨勢方向，順勢而為 (Trend Following)。")
+
+                # 2. 價格位置
+                dist_ma200 = (last_row['Close'] - last_row['MA200']) / last_row['MA200'] * 100
+                st.markdown(f"- **乖離率 (Distance to MA200)**: {dist_ma200:.1f}%")
+                if dist_ma200 > 15:
+                    st.warning("  ⚠️ 乖離過大，依據 PDF「均值回歸」概念，追高風險增加。")
+                else:
+                    st.info("  ℹ️ 乖離適中，趨勢健康。")
+
+                # 3. 支撐壓力 (簡單用近期高低點)
+                recent_high = df['High'].tail(60).max()
+                recent_low = df['Low'].tail(60).min()
+                st.markdown(f"- **近期區間 (60日)**: High ${recent_high:.0f} / Low ${recent_low:.0f}")
+                
+            with c2:
+                st.markdown("#### 🛡️ 風險管理與進場 (Risk Management)")
+                
+                # 4. RSI 背離檢查 (簡易版)
+                price_high_recent = df['Close'].tail(20).max()
+                rsi_high_recent = df['RSI'].tail(20).max()
+                price_high_prev = df['Close'].iloc[-60:-20].max()
+                rsi_high_prev = df['RSI'].iloc[-60:-20].max()
+                
+                divergence = "無明顯背離"
+                if price_high_recent > price_high_prev and rsi_high_recent < rsi_high_prev:
+                    divergence = "🚨 潛在頂部背離 (Bearish Divergence)"
+                st.markdown(f"- **背離訊號**: {divergence}")
+                st.caption("PDF 重點：動能指標與價格方向不一致時，往往是反轉前兆。")
+
+                # 5. 賺賠比建議
+                st.markdown("- **賺賠比 (R/R Ratio) 3:1 原則**")
+                st.info(f"""
+                若現在進場做多 {ticker}：
+                1. **停損點 (Stop Loss)**：建議設在近期支撐 ${recent_low:.2f} 或 MA20 ${last_row['MA20']:.2f} 下方。
+                2. **目標價 (Target)**：需大於進場價 + 3倍風險。
+                """)
+
+            # --- D. 綜合建議 ---
+            st.markdown("### 🤖 系統綜合評語")
+            if trend_status.startswith("🚀") and rsi_val < 70 and macd_val > 0:
+                st.success(f"目前 {ticker} 處於強勢多頭趨勢，且尚未過度超買。依據 PDF 順勢交易原則，可沿 MA20 操作，設好停損。")
+            elif rsi_val > 75:
+                st.warning(f"雖然 {ticker} 趨勢向上，但 RSI 顯示超買 (>75)。依據 PDF 建議，不宜追高，等待拉回測試支撐（如 MA20）再佈局。")
+            elif trend_status.startswith("🐻"):
+                st.error(f"目前 {ticker} 處於空頭趨勢 (價格 < 年線)。依據 PDF 原則，此時做多風險極高，應等待底部型態完成或突破下降趨勢線。")
+            else:
+                st.info(f"{ticker} 趨勢震盪整理中。依據 PDF 建議，可觀察箱型突破方向或等待均線重新排列。")
 
 def render_macro_page():
     with st.spinner("正在計算總經風險指標..."):
@@ -403,7 +640,7 @@ def render_liquidity_page():
             else:
                 st.warning("🟡 資金情緒中性")
 
-# --- 8. 主程式 ---
+# --- 9. 主程式 ---
 def main():
     if 'last_update' not in st.session_state:
         st.session_state['last_update'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -414,6 +651,8 @@ def main():
         render_commodity_page()
     elif "資金" in market_mode:
         render_liquidity_page()
+    elif "個股" in market_mode: # 修改條件以符合新選項
+        render_stock_strategy_page()
     else:
         with st.spinner(f'正在載入 {market_mode} 數據...'):
             if "S&P 500" in market_mode:
