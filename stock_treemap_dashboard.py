@@ -347,6 +347,11 @@ def render_stock_strategy_page():
     if analyze_btn or (ticker_input and ticker_input != ""):
         ticker = ticker_input.upper().strip()
         
+        # [新增] 台股代號防呆機制：若只輸入4位數字，預設為台股上市 (加上 .TW)
+        if ticker.isdigit() and len(ticker) == 4:
+            st.caption(f"💡 偵測到數字代號，已自動轉換為台股上市格式：{ticker}.TW")
+            ticker = f"{ticker}.TW"
+
         # --- 步驟 1: 驗證代號 ---
         with st.spinner(f"正在連線交易所查詢 {ticker} ..."):
             is_valid = check_ticker_validity(ticker)
