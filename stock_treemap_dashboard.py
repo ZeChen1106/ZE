@@ -2,6 +2,7 @@
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # UI Style Reference: Modern Streamlit Dashboard
 # Fixed: KeyError handling for yfinance MultiIndex & Robust Data Processing
+# Fixed: Robust handling for Analyst Estimates (Avg/Low/High index matching)
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -720,12 +721,43 @@ def render_stock_strategy_page():
                         if has_est_data:
                             target_cols = [c for c in est_df.columns if 'q' in c] or [c for c in est_df.columns if 'y' in c]
                             if target_cols:
-                                plot_df = est_df.loc[['avg', 'low', 'high'], target_cols].T.reset_index()
-                                plot_df.columns = ['Period', 'Average', 'Low', 'High']
-                                fig_est = px.bar(plot_df, x='Period', y='Average', title="分析師 EPS 預估 (12個月)", text_auto='.2f', color='Average', color_continuous_scale='Blues')
-                                fig_est.update_traces(error_y=dict(type='data', array=plot_df['High']-plot_df['Average'], arrayminus=plot_df['Average']-plot_df['Low'], visible=True))
-                                fig_est.update_layout(plot_bgcolor='white')
-                                st.plotly_chart(fig_est, use_container_width=True)
+                                try:
+                                    # Create a copy to avoid modifying cached data
+                                    plot_data = est_df.copy()
+                                    plot_data.index = plot_data.index.astype(str).str.lower()
+                                    
+                                    # Identify rows for Avg, Low, High
+                                    idx_map = {}
+                                    for idx in plot_data.index:
+                                        if 'avg' in idx: idx_map['avg'] = idx
+                                        elif 'low' in idx: idx_map['low'] = idx
+                                        elif 'high' in idx: idx_map['high'] = idx
+                                    
+                                    if 'avg' in idx_map:
+                                        rows = [idx_map['avg']]
+                                        if 'low' in idx_map: rows.append(idx_map['low'])
+                                        if 'high' in idx_map: rows.append(idx_map['high'])
+                                        
+                                        plot_df = plot_data.loc[rows, target_cols].T.reset_index()
+                                        
+                                        # Robust renaming
+                                        rename_map = {'index': 'Period', idx_map['avg']: 'Average'}
+                                        if 'low' in idx_map: rename_map[idx_map['low']] = 'Low'
+                                        if 'high' in idx_map: rename_map[idx_map['high']] = 'High'
+                                        plot_df = plot_df.rename(columns=rename_map)
+                                        
+                                        # Fill missing bounds
+                                        if 'Low' not in plot_df.columns: plot_df['Low'] = plot_df['Average']
+                                        if 'High' not in plot_df.columns: plot_df['High'] = plot_df['Average']
+                                        
+                                        fig_est = px.bar(plot_df, x='Period', y='Average', title="分析師 EPS 預估 (12個月)", text_auto='.2f', color='Average', color_continuous_scale='Blues')
+                                        fig_est.update_traces(error_y=dict(type='data', array=plot_df['High']-plot_df['Average'], arrayminus=plot_df['Average']-plot_df['Low'], visible=True))
+                                        fig_est.update_layout(plot_bgcolor='white')
+                                        st.plotly_chart(fig_est, use_container_width=True)
+                                    else:
+                                        st.info("數據格式不符：找不到平均預估值 (Avg Estimate)")
+                                except Exception as e:
+                                    st.info(f"繪圖錯誤: {str(e)}")
                     with tab2:
                         if has_trend_data:
                             trend_plot = trend_df.T
