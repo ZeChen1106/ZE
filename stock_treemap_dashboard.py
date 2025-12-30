@@ -1,8 +1,8 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
-# UI Style Reference: Modern Streamlit Dashboard
-# Fixed: AAPL validity check regression & Data processing robustness
-# Feature: Analyst Consensus & Price Targets Fallback
+# UI Style Reference: Modern Dark/Cyberpunk Dashboard
+# Fixed: "Market Sentiment" text clipping in Gauge Chart
+# Feature: Dark Mode & Tech Style UI Revamp
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -23,7 +23,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS 現代化風格注入 ---
+# --- CSS 暗黑科技風格注入 ---
 st.markdown("""
 <style>
     /* 引入現代字體 Inter */
@@ -31,11 +31,12 @@ st.markdown("""
     
     html, body, [class*="css"]  {
         font-family: 'Inter', sans-serif;
+        color: #e0e0e0; /* 全局字體亮色 */
     }
 
-    /* 背景微調 */
+    /* 背景微調 - 深色系 */
     .stApp {
-        background-color: #f8f9fa;
+        background-color: #0E1117;
     }
 
     /* 頂部標題區塊調整 */
@@ -44,75 +45,84 @@ st.markdown("""
         padding-bottom: 2rem;
     }
 
-    /* --- Dashboard Card 風格 --- */
+    /* --- Dashboard Card 風格 (深色卡片) --- */
     .dashboard-card {
-        background-color: #ffffff;
+        background-color: #161B22; /* GitHub Dark Dimmed 風格 */
         padding: 20px;
         border-radius: 12px;
-        border: 1px solid #e5e7eb;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        border: 1px solid #30363D;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
         margin-bottom: 20px;
     }
 
-    /* 強制美化 st.metric */
+    /* 強制美化 st.metric 原生元件 (深色版) */
     [data-testid="stMetric"] {
-        background-color: #ffffff;
-        border: 1px solid #e0e0e0;
+        background-color: #21262D;
+        border: 1px solid #30363D;
         padding: 15px 20px;
         border-radius: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        transition: transform 0.2s ease, border-color 0.2s ease;
     }
     
     [data-testid="stMetric"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        border-color: #2b7de9;
+        border-color: #58A6FF; /* 科技藍 hover */
+        box-shadow: 0 0 10px rgba(88, 166, 255, 0.2);
     }
 
     [data-testid="stMetricLabel"] {
         font-size: 14px;
-        color: #666;
+        color: #8B949E;
         font-weight: 600;
     }
 
     [data-testid="stMetricValue"] {
         font-size: 26px;
-        color: #1f2937;
+        color: #FFFFFF;
         font-weight: 700;
     }
 
     /* 標題樣式 */
     h1, h2, h3 {
-        color: #111827;
+        color: #FFFFFF !important;
         font-weight: 700;
         letter-spacing: -0.5px;
     }
     
     h3 {
         margin-top: 1rem;
-        border-left: 5px solid #2b7de9;
+        border-left: 5px solid #58A6FF; /* 科技藍 */
         padding-left: 10px;
         font-size: 1.25rem;
     }
 
     /* 側邊欄樣式優化 */
     [data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #e5e7eb;
+        background-color: #161B22;
+        border-right: 1px solid #30363D;
+    }
+    
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+        color: #FFFFFF !important;
     }
 
-    /* 按鈕樣式 */
+    /* 按鈕樣式 (科技感) */
     .stButton button {
         border-radius: 8px;
         font-weight: 600;
+        background-color: #238636; /* GitHub Green */
+        color: white;
+        border: none;
+    }
+    .stButton button:hover {
+        background-color: #2EA043;
     }
 
     /* 連結按鈕 */
     .stLinkButton a {
-        background-color: #f3f4f6;
-        color: #374151;
-        border: 1px solid #d1d5db;
+        background-color: #21262D;
+        color: #58A6FF;
+        border: 1px solid #30363D;
         border-radius: 6px;
         padding: 5px 10px;
         font-size: 0.9em;
@@ -120,13 +130,23 @@ st.markdown("""
         transition: all 0.2s;
     }
     .stLinkButton a:hover {
-        background-color: #e5e7eb;
-        color: #111827;
+        background-color: #30363D;
+        color: #FFFFFF;
+        border-color: #8B949E;
+    }
+    
+    /* Expander 樣式 */
+    .streamlit-expanderHeader {
+        background-color: #161B22;
+        color: #E0E0E0;
+        border-radius: 8px;
     }
 
-    .bullish { color: #10b981; font-weight: bold; }
-    .bearish { color: #ef4444; font-weight: bold; }
-    .neutral { color: #f59e0b; font-weight: bold; }
+    /* 狀態顏色文字 (更螢光的配色適合暗黑模式) */
+    .bullish { color: #3FB950; font-weight: bold; } /* Bright Green */
+    .bearish { color: #F85149; font-weight: bold; } /* Bright Red */
+    .neutral { color: #D29922; font-weight: bold; } /* Gold/Yellow */
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -241,18 +261,15 @@ def get_commodity_data():
 def get_stock_data(ticker, period="2y"):
     """
     獲取單一股票的詳細數據
-    修復重點：增加對 'Adj Close' 的支援，以及更寬容的欄位檢測
     """
     try:
-        # 下載數據，不預設 index 結構
         data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
         
         if data.empty:
             return pd.DataFrame()
 
-        # 1. 處理 MultiIndex (如果有的話)
+        # 1. 處理 MultiIndex
         if isinstance(data.columns, pd.MultiIndex):
-            # 優先尋找 'Close'
             target_level = None
             found = False
             for i in range(data.columns.nlevels):
@@ -264,26 +281,23 @@ def get_stock_data(ticker, period="2y"):
             if found:
                 data.columns = data.columns.get_level_values(target_level)
             else:
-                # 嘗試尋找 'Adj Close'
                 for i in range(data.columns.nlevels):
                     if 'Adj Close' in data.columns.get_level_values(i):
                         target_level = i
                         data.columns = data.columns.get_level_values(target_level)
                         break
-                # 如果還是沒找到，且只有一層多餘的 (e.g. Ticker)，就直接 drop
                 if not found and data.columns.nlevels > 1:
                      data.columns = data.columns.droplevel(0)
 
-        # 2. 欄位標準化 ('Adj Close' -> 'Close')
+        # 2. 欄位標準化
         if 'Adj Close' in data.columns and 'Close' not in data.columns:
             data.rename(columns={'Adj Close': 'Close'}, inplace=True)
 
-        # 3. 最終檢查與清除空值
+        # 3. 最終檢查
         if 'Close' in data.columns:
             data = data.dropna(subset=['Close'])
             return data
         else:
-            # 如果還是沒有 Close 欄位，回傳空
             return pd.DataFrame()
 
     except Exception as e:
@@ -294,10 +308,7 @@ def get_stock_data(ticker, period="2y"):
 def get_fundamentals(ticker):
     """
     嘗試獲取基本面數據
-    修復重點：確保回傳的字典永遠包含所有必要的 keys，避免 KeyError
-    新增：嘗試抓取目標價 (Target Price) 與評級，作為 Estimates 的備援
     """
-    # 預設空值結構
     result = {
         'P/FCF': None, 'FCF': None, 'MarketCap': None,
         'GrossMargin': None, 'OperatingMargin': None,
@@ -310,13 +321,11 @@ def get_fundamentals(ticker):
     
     try:
         stock = yf.Ticker(ticker)
-        # info 屬性可能會因為連線問題卡住或失敗，需小心
         try:
             info = stock.info
         except:
             info = {}
         
-        # 填入直接從 info 獲取的數據
         result['MarketCap'] = info.get('marketCap')
         result['GrossMargin'] = info.get('grossMargins')
         result['OperatingMargin'] = info.get('operatingMargins')
@@ -325,14 +334,12 @@ def get_fundamentals(ticker):
         result['PEG'] = info.get('pegRatio')
         result['ForwardEPS'] = info.get('forwardEps')
         
-        # [新增] 分析師目標價與評級 (較為穩定的來源)
         result['TargetMean'] = info.get('targetMeanPrice')
         result['TargetHigh'] = info.get('targetHighPrice')
         result['TargetLow'] = info.get('targetLowPrice')
         result['Recommendation'] = info.get('recommendationKey')
         result['NumAnalysts'] = info.get('numberOfAnalystOpinions')
 
-        # 1. FCF 計算
         fcf = info.get('freeCashflow')
         if fcf is None:
             try:
@@ -340,7 +347,6 @@ def get_fundamentals(ticker):
                 if not cf.empty:
                     op_cf = None
                     capex = None
-                    # 寬容匹配欄位名稱
                     for idx in cf.index:
                         idx_lower = str(idx).lower()
                         if 'operating' in idx_lower and 'cash' in idx_lower:
@@ -354,11 +360,9 @@ def get_fundamentals(ticker):
                 pass
         result['FCF'] = fcf
 
-        # 2. P/FCF
         if fcf and result['MarketCap'] and fcf > 0:
             result['P/FCF'] = result['MarketCap'] / fcf
 
-        # 3. 合約負債
         try:
             bs = stock.balance_sheet
             for col in ['Contract Liabilities', 'Deferred Revenue', 'Current Deferred Revenue']:
@@ -368,7 +372,6 @@ def get_fundamentals(ticker):
         except:
             pass
 
-        # 4. 分析師預估 (詳細表格，容易失敗)
         try:
             result['EarningsEst'] = stock.earnings_estimate
             result['EPSTrend'] = stock.eps_trend
@@ -381,12 +384,7 @@ def get_fundamentals(ticker):
     return result
 
 def check_ticker_validity(ticker):
-    """
-    檢查代號是否有效
-    修復重點：改回使用最原始的 yf.download 檢查，不依賴 get_stock_data 的複雜邏輯，確保 AAPL 能通過
-    """
     try:
-        # 只抓一天，快速檢查是否有回傳資料
         data = yf.download(ticker, period="1d", progress=False)
         return not data.empty
     except:
@@ -431,12 +429,10 @@ def process_data_for_periods(base_df, history_data, market_caps):
     results = []
     tickers = base_df['Ticker'].tolist()
     
-    valid_tickers = []
+    valid_tickers = tickers
     if isinstance(history_data.columns, pd.MultiIndex):
         fetched_tickers = set(history_data.columns.get_level_values(0))
         valid_tickers = [t for t in tickers if t in fetched_tickers]
-    else:
-        valid_tickers = tickers
 
     for ticker in valid_tickers:
         try:
@@ -496,25 +492,58 @@ def plot_treemap(df, change_col, title, color_range):
         textfont=dict(family="Arial Black", size=15), 
         hovertemplate='<b>%{label}</b><br>代號: %{customdata[0]}<br>股價: %{customdata[1]:.2f}<br>漲跌幅: %{customdata[2]:.2f}%'
     )
-    fig.update_layout(height=600, margin=dict(t=20, l=10, r=10, b=10))
+    # Dark Mode Layout
+    fig.update_layout(
+        height=600, 
+        margin=dict(t=20, l=10, r=10, b=10),
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_gauge(score):
     fig = go.Figure(go.Indicator(
         mode = "gauge+number", value = score,
-        domain = {'x': [0, 1], 'y': [0, 1]}, title = {'text': "市場情緒 (Proxy)"},
-        gauge = {'axis': {'range': [None, 100]}, 'bar': {'color': "darkblue"},
-                 'steps': [{'range': [0, 25], 'color': '#ef4444'}, {'range': [25, 45], 'color': '#fca5a5'},
-                           {'range': [45, 55], 'color': '#e5e7eb'}, {'range': [55, 75], 'color': '#86efac'},
-                           {'range': [75, 100], 'color': '#10b981'}]}
+        domain = {'x': [0, 1], 'y': [0, 1]}, 
+        title = {'text': "市場情緒 (Proxy)", 'font': {'size': 18, 'color': 'white'}},
+        gauge = {
+            'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "white"}, 
+            'bar': {'color': "#58A6FF"}, # Tech Blue
+            'bgcolor': "#161B22",
+            'borderwidth': 2,
+            'bordercolor': "#30363D",
+            'steps': [
+                {'range': [0, 25], 'color': '#DA3633'}, # Red
+                {'range': [25, 45], 'color': '#BC4C00'}, # Orange
+                {'range': [45, 55], 'color': '#6E7681'}, # Grey
+                {'range': [55, 75], 'color': '#2EA043'}, # Green
+                {'range': [75, 100], 'color': '#238636'} # Dark Green
+            ]
+        }
     ))
-    fig.update_layout(height=300, margin=dict(t=30, b=10, l=30, r=30))
+    # 修復：增加 margin-top 避免標題被切掉
+    fig.update_layout(
+        height=300, 
+        margin=dict(t=60, b=20, l=30, r=30), 
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font={'color': "white"}
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_line_chart(data, title, color):
     fig = px.line(data, title=title)
     fig.update_traces(line_color=color, line_width=2)
-    fig.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None)
+    fig.update_layout(
+        height=350, 
+        margin=dict(l=20, r=20, t=40, b=20), 
+        xaxis_title=None, yaxis_title=None,
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_tech_chart(df, ticker, title):
@@ -528,46 +557,47 @@ def plot_tech_chart(df, ticker, title):
 
     # 1. 主圖：K線 + MA
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='blue', width=1.5), name='MA50'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='red', width=2), name='MA200'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='#FFA500', width=1), name='MA20'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='#58A6FF', width=1.5), name='MA50'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='#FF4B4B', width=2), name='MA200'), row=1, col=1)
     
     # 布林通道
     fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='gray', width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='gray', width=0), fill='tonexty', fillcolor='rgba(128,128,128,0.1)', name='BB Band'), row=1, col=1)
 
     # 2. 成交量
-    colors = ['green' if o >= c else 'red' for o, c in zip(df['Open'], df['Close'])]
+    colors = ['#238636' if o >= c else '#DA3633' for o, c in zip(df['Open'], df['Close'])]
     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
     # 3. RSI
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=2), name='RSI'), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#A371F7', width=2), name='RSI'), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="#FF4B4B", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="#3FB950", row=3, col=1)
 
     # 4. MACD
-    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='blue', width=1.5), name='MACD'), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], line=dict(color='orange', width=1.5), name='Signal'), row=4, col=1)
-    colors_hist = ['green' if v >= 0 else 'red' for v in df['MACD_Hist']]
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='#58A6FF', width=1.5), name='MACD'), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], line=dict(color='#FFA500', width=1.5), name='Signal'), row=4, col=1)
+    colors_hist = ['#238636' if v >= 0 else '#DA3633' for v in df['MACD_Hist']]
     fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors_hist, name='Hist'), row=4, col=1)
 
     fig.update_layout(
         height=900, 
         xaxis_rangeslider_visible=False,
         hovermode='x unified',
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        margin=dict(t=30, b=30)
+        template="plotly_dark", # Dark theme
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(t=30, b=30),
+        font=dict(color="#e0e0e0")
     )
-    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0')
-    fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
+    fig.update_xaxes(showgrid=True, gridcolor='#30363D')
+    fig.update_yaxes(showgrid=True, gridcolor='#30363D')
     
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 8. 頁面渲染邏輯 ---
 
 def render_stock_strategy_page():
-    # Input Card
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
     c1, c2 = st.columns([4, 1])
     with c1:
@@ -592,7 +622,6 @@ def render_stock_strategy_page():
             ticker = f"{ticker}.TW"
             st.caption(f"💡 偵測到數字代號，將以台股上市模式查詢：{ticker}")
 
-        # 使用修正後的 check_ticker_validity
         with st.spinner(f"正在連線交易所查詢 {ticker} ..."):
             is_valid = check_ticker_validity(ticker)
             if not is_valid and ticker.endswith('.TW'):
@@ -603,7 +632,6 @@ def render_stock_strategy_page():
 
         if not is_valid:
             st.error(f"❌ 查無代號：{ticker}")
-            st.info("💡 提示：請確認代號是否正確。台股上市請用 .TW，上櫃請用 .TWO (若系統未自動抓到)。")
             return
 
         with st.spinner(f"✅ 代號確認！正在計算 {ticker} 技術指標與基本面..."):
@@ -647,7 +675,7 @@ def render_stock_strategy_page():
 
             st.write("")
 
-            # --- 基本面快照區塊 (Robust Rendering) ---
+            # --- 基本面快照區塊 ---
             try:
                 st.markdown("### 2. 基本面體質快照 (Fundamental Snapshot)")
                 f1, f2, f3, f4 = st.columns(4)
@@ -694,21 +722,19 @@ def render_stock_strategy_page():
             except Exception as e:
                 st.error(f"基本面數據渲染錯誤: {e}")
 
-            # --- 3. 分析師 EPS 預估 (Robust Charting & Fallback) ---
+            # --- 3. 分析師 EPS 預估 ---
             try:
                 est_df = fund_data.get('EarningsEst')
                 trend_df = fund_data.get('EPSTrend')
                 has_est_data = est_df is not None and not est_df.empty
                 has_trend_data = trend_df is not None and not trend_df.empty
                 
-                # Check for alternative data
                 target_mean = fund_data.get('TargetMean')
                 recommendation = fund_data.get('Recommendation')
                 
                 with st.expander("📊 點擊展開：分析師看法 (Analyst Estimates & Consensus)", expanded=True):
                     
                     if has_est_data or has_trend_data:
-                        # 優先顯示詳細預估圖表
                         tab1, tab2 = st.tabs(["未來預估 (Estimates)", "修正趨勢 (Revisions)"])
                         with tab1:
                             if has_est_data:
@@ -741,7 +767,7 @@ def render_stock_strategy_page():
                                         
                                         fig_est = px.bar(plot_df, x='Period', y='Average', title="分析師 EPS 預估", text_auto='.2f', color='Average', color_continuous_scale='Blues')
                                         fig_est.update_traces(error_y=dict(type='data', array=plot_df['High']-plot_df['Average'], arrayminus=plot_df['Average']-plot_df['Low'], visible=True))
-                                        fig_est.update_layout(plot_bgcolor='white')
+                                        fig_est.update_layout(template="plotly_dark", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                                         st.plotly_chart(fig_est, use_container_width=True)
                                     else:
                                         st.info("無可用季度數據，請參考下方目標價。")
@@ -759,12 +785,11 @@ def render_stock_strategy_page():
                                         fig_trend = go.Figure()
                                         for col in trend_plot.columns:
                                             fig_trend.add_trace(go.Scatter(x=trend_plot.index, y=trend_plot[col], mode='lines+markers', name=col))
-                                        fig_trend.update_layout(title="EPS 預估修正趨勢", plot_bgcolor='white')
+                                        fig_trend.update_layout(title="EPS 預估修正趨勢", template="plotly_dark", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                                         st.plotly_chart(fig_trend, use_container_width=True)
                                 except Exception as e:
                                     st.caption(f"趨勢圖繪製失敗: {e}")
                     
-                    # Fallback or Additional Info: Price Targets
                     if target_mean is not None:
                         st.markdown("#### 🎯 分析師目標價與評級 (Consensus & Targets)")
                         
@@ -776,7 +801,6 @@ def render_stock_strategy_page():
                                 st.caption(f"基於 {fund_data['NumAnalysts']} 位分析師意見")
 
                         with col_t2:
-                            # 繪製簡單的目標價位階圖
                             current_price = last_row['Close']
                             low_target = fund_data.get('TargetLow', current_price * 0.9)
                             high_target = fund_data.get('TargetHigh', current_price * 1.1)
@@ -787,14 +811,14 @@ def render_stock_strategy_page():
                                 x=[low_target],
                                 name='Low',
                                 orientation='h',
-                                marker_color='#ff4b4b'
+                                marker_color='#F85149'
                             ))
                             fig_target.add_trace(go.Bar(
                                 y=['Price Target'],
                                 x=[target_mean - low_target],
                                 name='Mean',
                                 orientation='h',
-                                marker_color='#2b7de9',
+                                marker_color='#58A6FF',
                                 base=low_target
                             ))
                             fig_target.add_trace(go.Bar(
@@ -802,12 +826,11 @@ def render_stock_strategy_page():
                                 x=[high_target - target_mean],
                                 name='High',
                                 orientation='h',
-                                marker_color='#008000',
+                                marker_color='#238636',
                                 base=target_mean
                             ))
                             
-                            # Add Current Price Marker
-                            fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="black", annotation_text="Now")
+                            fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="white", annotation_text="Now")
                             
                             fig_target.update_layout(
                                 barmode='stack', 
@@ -816,7 +839,9 @@ def render_stock_strategy_page():
                                 height=200,
                                 margin=dict(l=20, r=20, t=30, b=20),
                                 showlegend=False,
-                                plot_bgcolor='white'
+                                template="plotly_dark",
+                                plot_bgcolor='rgba(0,0,0,0)',
+                                paper_bgcolor='rgba(0,0,0,0)'
                             )
                             st.plotly_chart(fig_target, use_container_width=True)
                     
@@ -901,8 +926,14 @@ def render_macro_page():
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
     st.markdown("#### VIX 波動率走勢 (1 Year)")
     fig_vix = px.line(vix_series, title="CBOE VIX Index")
-    fig_vix.add_hline(y=20, line_dash="dash", line_color="red")
-    fig_vix.update_layout(plot_bgcolor='white')
+    fig_vix.add_hline(y=20, line_dash="dash", line_color="#F85149")
+    fig_vix.update_layout(
+        template="plotly_dark", 
+        plot_bgcolor='rgba(0,0,0,0)', 
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color="#e0e0e0")
+    )
+    fig_vix.update_traces(line_color="#58A6FF")
     st.plotly_chart(fig_vix, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -918,7 +949,7 @@ def render_commodity_page():
         with c1:
             if 'BDRY' in comm_data.columns.levels[0]:
                 data = comm_data['BDRY']['Close'].dropna()
-                plot_line_chart(data, "BDI 替代指標 (BDRY ETF)", "#1f77b4")
+                plot_line_chart(data, "BDI 替代指標 (BDRY ETF)", "#58A6FF")
         with c2:
             st.metric("BDI 狀態", "監控中")
             st.link_button("查看 Investing.com", "https://www.investing.com/indices/baltic-dry")
@@ -931,11 +962,11 @@ def render_commodity_page():
         with c3:
             if 'CL=F' in comm_data.columns.levels[0]:
                 data = comm_data['CL=F']['Close'].dropna()
-                plot_line_chart(data, "WTI 原油", "#ef4444")
+                plot_line_chart(data, "WTI 原油", "#F85149")
         with c4:
             if 'HG=F' in comm_data.columns.levels[0]:
                 data = comm_data['HG=F']['Close'].dropna()
-                plot_line_chart(data, "銅 (Copper)", "#10b981")
+                plot_line_chart(data, "銅 (Copper)", "#3FB950")
         st.markdown('</div>', unsafe_allow_html=True)
 
 def render_liquidity_page():
