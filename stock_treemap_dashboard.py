@@ -2,10 +2,9 @@
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # Style: Reverted to Clean Light Theme
 # Features: 
-#   1. Robust Fix for S&P 500 & TWSE MultiIndex issues (Ticker/Price swap)
-#   2. Fix for Single Ticker Data (getting Close column)
-#   3. ENHANCED: Deep scraping for Fundamentals (Calculated metrics fallback)
-#   4. ENHANCED: Analyst Recommendations Summary (Strong Buy/Hold chart)
+#   1. CRITICAL FIX: get_macro_data structure swap (Fixes KeyError: '^VIX')
+#   2. CRITICAL FIX: Fuzzy dictionary lookup for Fundamentals (Fixes N/A data)
+#   3. Robust Fix for S&P 500 & TWSE MultiIndex issues
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -225,7 +224,6 @@ def fetch_price_history(tickers, period="1y"):
     下載大量股票歷史數據
     """
     try:
-        # 下載數據 (group_by='ticker' 理論上回傳 (Ticker, Price) 或 (Price, Ticker))
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, threads=True, progress=False)
         return data
     except Exception:
@@ -234,21 +232,40 @@ def fetch_price_history(tickers, period="1y"):
 # --- 4. 總經/原物料/資金 數據獲取 ---
 @st.cache_data(ttl=3600)
 def get_macro_data():
+    """
+    [Critical Fix] 確保回傳的 DataFrame 結構一定是 (Ticker, Price)
+    """
     tickers = ["^VIX", "^GSPC"]
     data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, progress=False)
+    
+    # [Robust Logic] 檢查 Close 到底在哪一層
+    if isinstance(data.columns, pd.MultiIndex):
+        level0 = data.columns.get_level_values(0)
+        # 如果第一層發現 'Close'，代表結構是 (Price, Ticker)，需要交換
+        if 'Close' in level0:
+            data = data.swaplevel(0, 1, axis=1)
+            data.sort_index(axis=1, inplace=True)
+            
     return data
 
 @st.cache_data(ttl=3600)
 def get_commodity_data():
     tickers = ["BDRY", "DBC", "HG=F", "CL=F", "GC=F"]
     data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
+    
+    # 同樣的保護機制
+    if isinstance(data.columns, pd.MultiIndex):
+        level0 = data.columns.get_level_values(0)
+        if 'Close' in level0:
+            data = data.swaplevel(0, 1, axis=1)
+            data.sort_index(axis=1, inplace=True)
+            
     return data
 
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, period="2y"):
     """
     獲取單一股票的詳細數據 (針對個股分析頁面)
-    修復：確保能正確處理單一股票回傳的 MultiIndex 或一般 DataFrame
     """
     try:
         data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
@@ -256,14 +273,12 @@ def get_stock_data(ticker, period="2y"):
         if data.empty:
             return pd.DataFrame()
 
-        # 1. 處理 MultiIndex (針對 yfinance 版本差異)
+        # 1. 處理 MultiIndex
         if isinstance(data.columns, pd.MultiIndex):
-            # 優先尋找 'Close' 欄位所在的層級
             target_level = None
             found = False
             for i in range(data.columns.nlevels):
-                level_values = data.columns.get_level_values(i)
-                if 'Close' in level_values:
+                if 'Close' in data.columns.get_level_values(i):
                     target_level = i
                     found = True
                     break
@@ -271,21 +286,13 @@ def get_stock_data(ticker, period="2y"):
             if found:
                 data.columns = data.columns.get_level_values(target_level)
             else:
-                # 嘗試尋找 'Adj Close'
                 for i in range(data.columns.nlevels):
-                    level_values = data.columns.get_level_values(i)
-                    if 'Adj Close' in level_values:
+                    if 'Adj Close' in data.columns.get_level_values(i):
                         target_level = i
                         data.columns = data.columns.get_level_values(target_level)
-                        found = True
                         break
-            
-            # 如果還是沒找到 Close，但結構有多層，嘗試直接取最底層 (通常是 Price)
-            if not found and data.columns.nlevels > 1:
-                 # 有時候 (Ticker, Price) -> 取 level 1
-                 # 有時候 (Price, Ticker) -> 取 level 0
-                 # 這裡做一個假設性的處理，或者檢查欄位名稱是否像價格
-                 pass 
+                if not found and data.columns.nlevels > 1:
+                     data.columns = data.columns.droplevel(0)
 
         # 2. 欄位標準化
         if 'Adj Close' in data.columns and 'Close' not in data.columns:
@@ -296,8 +303,6 @@ def get_stock_data(ticker, period="2y"):
             data = data.dropna(subset=['Close'])
             return data
         else:
-            # 最後一搏：如果只剩一層且有 Ticker 名稱，可能是 (Ticker) 只有一個 Close?
-            # 暫時回傳空，避免錯誤
             return pd.DataFrame()
 
     except Exception as e:
@@ -307,79 +312,81 @@ def get_stock_data(ticker, period="2y"):
 @st.cache_data(ttl=12 * 3600)
 def get_fundamentals(ticker):
     """
-    嘗試獲取基本面數據
-    修復重點：
-    1. 增強欄位獲取失敗時的備援 (例如 Forward EPS 可由股價/Forward PE 計算)
-    2. 新增抓取 recommendations_summary (評級分佈) 作為 Estimates 抓不到時的替代方案
+    嘗試獲取基本面數據 (Extreme Robustness)
+    包含大小寫模糊比對與多重計算備援
     """
     result = {
         'P/FCF': None, 'FCF': None, 'MarketCap': None,
         'GrossMargin': None, 'OperatingMargin': None,
         'EarningsGrowth': None, 'ContractLiabilities': None,
-        'TrailingPE': None, 'ForwardPE': None, # Added ForwardPE
+        'TrailingPE': None, 'ForwardPE': None,
         'PEG': None, 'ForwardEPS': None,
         'EarningsEst': None, 'EPSTrend': None,
         'TargetMean': None, 'TargetHigh': None, 'TargetLow': None,
         'Recommendation': None, 'NumAnalysts': None,
-        'RecSummary': None # Added Recommendation Summary
+        'RecSummary': None
     }
     
     try:
         stock = yf.Ticker(ticker)
         
-        # --- A. 獲取基本 Info (最快) ---
+        # --- A. 獲取基本 Info (模糊比對) ---
+        info = {}
         try:
-            info = stock.info
+            raw_info = stock.info
+            # 轉成全小寫 key 的 map，方便查詢
+            info = {k.lower(): v for k, v in raw_info.items()} if raw_info else {}
         except:
-            info = {}
+            pass
         
-        result['MarketCap'] = info.get('marketCap')
-        result['GrossMargin'] = info.get('grossMargins')
-        result['OperatingMargin'] = info.get('operatingMargins')
-        result['EarningsGrowth'] = info.get('earningsGrowth')
-        result['TrailingPE'] = info.get('trailingPE')
-        result['ForwardPE'] = info.get('forwardPE') # Get Forward PE for calculation
-        result['PEG'] = info.get('pegRatio')
-        result['ForwardEPS'] = info.get('forwardEps')
-        
-        # 1. 嘗試補救 Forward EPS
-        if result['ForwardEPS'] is None and result['ForwardPE'] and info.get('currentPrice'):
-             # EPS = Price / PE
-             result['ForwardEPS'] = info.get('currentPrice') / result['ForwardPE']
+        # 輔助函數：不分大小寫取值
+        def get_val(keys_list, default=None):
+            for k in keys_list:
+                if k.lower() in info:
+                    return info[k.lower()]
+            return default
 
-        # 2. 嘗試補救 PEG
+        result['MarketCap'] = get_val(['marketCap'])
+        result['GrossMargin'] = get_val(['grossMargins', 'grossMargin'])
+        result['OperatingMargin'] = get_val(['operatingMargins', 'operatingMargin'])
+        result['EarningsGrowth'] = get_val(['earningsGrowth'])
+        result['TrailingPE'] = get_val(['trailingPE'])
+        result['ForwardPE'] = get_val(['forwardPE'])
+        result['PEG'] = get_val(['pegRatio'])
+        result['ForwardEPS'] = get_val(['forwardEps', 'forwardEPS'])
+        
+        # 1. 嘗試補救 Forward EPS (股價/ForwardPE)
+        if result['ForwardEPS'] is None and result['ForwardPE']:
+             curr_price = get_val(['currentPrice', 'regularMarketPrice', 'ask', 'bid'])
+             if curr_price:
+                 result['ForwardEPS'] = curr_price / result['ForwardPE']
+
+        # 2. 嘗試補救 PEG (TrailingPE / Growth)
         if result['PEG'] is None and result['TrailingPE'] and result['EarningsGrowth']:
-             # 簡單估算: PEG = PE / (Growth * 100)
              if result['EarningsGrowth'] > 0:
                 result['PEG'] = result['TrailingPE'] / (result['EarningsGrowth'] * 100)
 
         # 分析師數據 (Info 來源)
-        result['TargetMean'] = info.get('targetMeanPrice')
-        result['TargetHigh'] = info.get('targetHighPrice')
-        result['TargetLow'] = info.get('targetLowPrice')
-        result['Recommendation'] = info.get('recommendationKey')
-        result['NumAnalysts'] = info.get('numberOfAnalystOpinions')
+        result['TargetMean'] = get_val(['targetMeanPrice'])
+        result['TargetHigh'] = get_val(['targetHighPrice'])
+        result['TargetLow'] = get_val(['targetLowPrice'])
+        result['Recommendation'] = get_val(['recommendationKey'])
+        result['NumAnalysts'] = get_val(['numberOfAnalystOpinions'])
 
-        # --- B. 獲取現金流 (較慢，需解析) ---
-        fcf = info.get('freeCashflow')
+        # --- B. 獲取現金流 (模糊比對) ---
+        fcf = get_val(['freeCashflow'])
         if fcf is None:
             try:
                 cf = stock.cashflow
                 if not cf.empty:
-                    # 取最近一期 (通常是第一欄)
-                    recent_cf = cf.iloc[:, 0]
-                    
+                    recent_cf = cf.iloc[:, 0] # 最近一期
                     op_cf = None
                     capex = None
                     
-                    # 模糊搜尋 Index
                     for idx in recent_cf.index:
                         idx_str = str(idx).lower()
-                        # 找營運現金流
-                        if ('operating' in idx_str and 'cash' in idx_str) or 'total cash from operating activities' in idx_str:
+                        if 'operating' in idx_str and 'cash' in idx_str:
                             op_cf = recent_cf[idx]
-                        
-                        # 找資本支出 (通常是負數)
                         if 'capital' in idx_str and 'expenditure' in idx_str:
                             capex = recent_cf[idx]
                     
@@ -392,27 +399,23 @@ def get_fundamentals(ticker):
         if fcf and result['MarketCap'] and fcf > 0:
             result['P/FCF'] = result['MarketCap'] / fcf
 
-        # --- C. 獲取合約負債 (資產負債表) ---
+        # --- C. 獲取合約負債 ---
         try:
             bs = stock.balance_sheet
             if not bs.empty:
-                # 模糊搜尋
                 for idx in bs.index:
                     idx_str = str(idx).lower()
-                    if 'contract' in idx_str and 'liabilities' in idx_str:
-                        result['ContractLiabilities'] = bs.loc[idx].iloc[0]
-                        break
-                    if 'deferred' in idx_str and 'revenue' in idx_str:
+                    if ('contract' in idx_str and 'liabilities' in idx_str) or \
+                       ('deferred' in idx_str and 'revenue' in idx_str):
                         result['ContractLiabilities'] = bs.loc[idx].iloc[0]
                         break
         except:
             pass
 
-        # --- D. 獲取分析師詳細預估 (最容易失敗，放最後) ---
+        # --- D. 獲取分析師詳細預估 ---
         try:
             result['EarningsEst'] = stock.earnings_estimate
             result['EPSTrend'] = stock.eps_trend
-            # [新增] 獲取評級分佈 (Strong Buy, Buy, etc.)
             result['RecSummary'] = stock.recommendations_summary
         except:
             pass
@@ -424,7 +427,6 @@ def get_fundamentals(ticker):
 
 def check_ticker_validity(ticker):
     try:
-        # 使用最原始的方式檢查，確保 AAPL 能通過
         data = yf.download(ticker, period="1d", progress=False)
         return not data.empty
     except:
@@ -466,18 +468,14 @@ def calculate_indicators(df):
 
 # --- 6. 核心計算邏輯 (股票) ---
 def process_data_for_periods(base_df, history_data, market_caps):
-    """
-    處理大量股票數據，修復 MultiIndex 結構問題
-    """
     results = []
     tickers = base_df['Ticker'].tolist()
     
-    # [CRITICAL FIX] 偵測並修復 MultiIndex 順序 (Price, Ticker) vs (Ticker, Price)
+    # [CRITICAL FIX] 偵測並修復 MultiIndex 順序
     if isinstance(history_data.columns, pd.MultiIndex):
         level0_vals = history_data.columns.get_level_values(0)
         # 如果 Level 0 包含 'Close'，表示結構是 (Price, Ticker)，需要交換
         if 'Close' in level0_vals:
-            # 交換 Level，變成 (Ticker, Price) 以符合後續邏輯
             history_data = history_data.swaplevel(0, 1, axis=1)
             history_data.sort_index(axis=1, inplace=True)
             
@@ -487,20 +485,16 @@ def process_data_for_periods(base_df, history_data, market_caps):
         fetched_tickers = set(history_data.columns.get_level_values(0))
         valid_tickers = [t for t in tickers if t in fetched_tickers]
     else:
-        # 如果不是 MultiIndex，可能是只有一檔股票或格式錯誤
-        # 這裡做一個簡單的容錯
         valid_tickers = tickers if not history_data.empty else []
 
     for ticker in valid_tickers:
         try:
-            # 安全獲取 Close 數據
             stock_df = pd.Series()
             if isinstance(history_data.columns, pd.MultiIndex):
                 if ticker in history_data.columns.get_level_values(0):
                     if 'Close' in history_data[ticker].columns:
                         stock_df = history_data[ticker]['Close'].dropna()
             else:
-                # 只有單層，檢查是否有 Close
                 if 'Close' in history_data.columns:
                     stock_df = history_data['Close'].dropna()
 
@@ -725,7 +719,6 @@ def render_stock_strategy_page():
 
                 peg = fund_data.get('PEG')
                 peg_est = False
-                # 如果沒有官方 PEG，嘗試手動計算
                 if peg is None:
                     pe_val = fund_data.get('TrailingPE')
                     growth = fund_data.get('EarningsGrowth')
@@ -775,7 +768,6 @@ def render_stock_strategy_page():
                 
                 with st.expander("📊 點擊展開：分析師看法 (Analyst Estimates & Consensus)", expanded=True):
                     
-                    # Tab 結構：如果有資料才顯示對應 Tab
                     tabs = []
                     if has_est_data: tabs.append("未來預估")
                     if has_trend_data: tabs.append("修正趨勢")
@@ -838,10 +830,7 @@ def render_stock_strategy_page():
                         if has_rec_data:
                             with tab_objs[tabs.index("評級分佈")]:
                                 try:
-                                    # rec_summary 通常 columns 是 period, strongBuy, buy, hold, sell, strongSell
-                                    # 我們只取最近一期 (period=0m or similar)
                                     latest_rec = rec_summary.iloc[0] # Series
-                                    # Filter meaningful keys
                                     rec_keys = ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']
                                     rec_vals = [latest_rec.get(k, 0) for k in rec_keys]
                                     
@@ -937,23 +926,30 @@ def render_macro_page():
     with st.spinner("正在計算總經風險指標..."):
         macro_data = get_macro_data()
         
-        if macro_data.empty:
-            st.error("無法取得市場數據")
+        # [Safety Check] Ensure Close column exists and handle MultiIndex properly
+        try:
+            # macro_data is guaranteed to be (Ticker, Price) via get_macro_data
+            if '^VIX' not in macro_data.columns.get_level_values(0):
+                st.error("無法取得 VIX 數據")
+                return
+            
+            vix_series = macro_data['^VIX']['Close'].dropna()
+            sp500_series = macro_data['^GSPC']['Close'].dropna()
+            f_g_score, v_val, r_val = calculate_fear_greed(vix_series.iloc[-1], sp500_series)
+            
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                plot_gauge(f_g_score)
+                st.metric("VIX 恐慌指數", f"{v_val:.2f}")
+
+            with col2:
+                st.info("💡 台灣景氣對策信號請參閱國發會")
+                st.link_button("👉 國發會查詢系統", "https://index.ndc.gov.tw/n/zh_tw/indicators")
+                st.caption("Fear & Greed 模型基於 VIX 與 RSI 加權計算。")
+        except Exception as e:
+            st.error(f"數據處理錯誤: {e}")
             return
 
-        vix_series = macro_data['^VIX']['Close'].dropna()
-        sp500_series = macro_data['^GSPC']['Close'].dropna()
-        f_g_score, v_val, r_val = calculate_fear_greed(vix_series.iloc[-1], sp500_series)
-        
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            plot_gauge(f_g_score)
-            st.metric("VIX 恐慌指數", f"{v_val:.2f}")
-
-        with col2:
-            st.info("💡 台灣景氣對策信號請參閱國發會")
-            st.link_button("👉 國發會查詢系統", "https://index.ndc.gov.tw/n/zh_tw/indicators")
-            st.caption("Fear & Greed 模型基於 VIX 與 RSI 加權計算。")
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
