@@ -1,10 +1,11 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # Style: Reverted to Clean Light Theme
-# Features: 
-#   1. CRITICAL FIX: get_macro_data structure swap (Fixes KeyError: '^VIX')
-#   2. CRITICAL FIX: Fuzzy dictionary lookup for Fundamentals (Fixes N/A data)
-#   3. Robust Fix for S&P 500 & TWSE MultiIndex issues
+# Optimization: 
+#   1. Parallel Fetching for Fundamentals (Significant speedup for single stock)
+#   2. Vectorized Calculation for Market Dashboard (Speedup for S&P 500)
+#   3. Reduced data fetch period for Macro (1y)
+# Features: Robust Fixes for yfinance MultiIndex retained
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -236,7 +237,8 @@ def get_macro_data():
     [Critical Fix] 確保回傳的 DataFrame 結構一定是 (Ticker, Price)
     """
     tickers = ["^VIX", "^GSPC"]
-    data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, progress=False)
+    # 縮短獲取時間為 1y，加速載入
+    data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
     
     # [Robust Logic] 檢查 Close 到底在哪一層
     if isinstance(data.columns, pd.MultiIndex):
@@ -309,11 +311,36 @@ def get_stock_data(ticker, period="2y"):
         print(f"Error fetching {ticker}: {e}")
         return pd.DataFrame()
 
+# [OPTIMIZATION] 平行處理 Helper Functions
+def _fetch_info_helper(stock):
+    try:
+        return stock.info
+    except:
+        return {}
+
+def _fetch_cashflow_helper(stock):
+    try:
+        return stock.cashflow
+    except:
+        return pd.DataFrame()
+
+def _fetch_balance_sheet_helper(stock):
+    try:
+        return stock.balance_sheet
+    except:
+        return pd.DataFrame()
+
+def _fetch_estimates_helper(stock):
+    try:
+        return stock.earnings_estimate, stock.eps_trend, stock.recommendations_summary
+    except:
+        return None, None, None
+
 @st.cache_data(ttl=12 * 3600)
 def get_fundamentals(ticker):
     """
-    嘗試獲取基本面數據 (Extreme Robustness)
-    包含大小寫模糊比對與多重計算備援
+    嘗試獲取基本面數據 (Extreme Robustness & Speed)
+    使用 ThreadPoolExecutor 進行平行抓取
     """
     result = {
         'P/FCF': None, 'FCF': None, 'MarketCap': None,
@@ -330,20 +357,26 @@ def get_fundamentals(ticker):
     try:
         stock = yf.Ticker(ticker)
         
-        # --- A. 獲取基本 Info (模糊比對) ---
-        info = {}
-        try:
-            raw_info = stock.info
-            # 轉成全小寫 key 的 map，方便查詢
-            info = {k.lower(): v for k, v in raw_info.items()} if raw_info else {}
-        except:
-            pass
+        # [OPTIMIZATION] 平行抓取所有資料源
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_info = executor.submit(_fetch_info_helper, stock)
+            future_cf = executor.submit(_fetch_cashflow_helper, stock)
+            future_bs = executor.submit(_fetch_balance_sheet_helper, stock)
+            future_est = executor.submit(_fetch_estimates_helper, stock)
+            
+            info = future_info.result()
+            cf = future_cf.result()
+            bs = future_bs.result()
+            est_data = future_est.result() # returns tuple (earnings_estimate, eps_trend, rec_summary)
+
+        # --- A. 處理 Info ---
+        # 轉成全小寫 key 的 map
+        info_lower = {k.lower(): v for k, v in info.items()} if info else {}
         
-        # 輔助函數：不分大小寫取值
         def get_val(keys_list, default=None):
             for k in keys_list:
-                if k.lower() in info:
-                    return info[k.lower()]
+                if k.lower() in info_lower:
+                    return info_lower[k.lower()]
             return default
 
         result['MarketCap'] = get_val(['marketCap'])
@@ -355,70 +388,61 @@ def get_fundamentals(ticker):
         result['PEG'] = get_val(['pegRatio'])
         result['ForwardEPS'] = get_val(['forwardEps', 'forwardEPS'])
         
-        # 1. 嘗試補救 Forward EPS (股價/ForwardPE)
+        # 補救 Forward EPS
         if result['ForwardEPS'] is None and result['ForwardPE']:
              curr_price = get_val(['currentPrice', 'regularMarketPrice', 'ask', 'bid'])
              if curr_price:
                  result['ForwardEPS'] = curr_price / result['ForwardPE']
 
-        # 2. 嘗試補救 PEG (TrailingPE / Growth)
+        # 補救 PEG
         if result['PEG'] is None and result['TrailingPE'] and result['EarningsGrowth']:
              if result['EarningsGrowth'] > 0:
                 result['PEG'] = result['TrailingPE'] / (result['EarningsGrowth'] * 100)
 
-        # 分析師數據 (Info 來源)
         result['TargetMean'] = get_val(['targetMeanPrice'])
         result['TargetHigh'] = get_val(['targetHighPrice'])
         result['TargetLow'] = get_val(['targetLowPrice'])
         result['Recommendation'] = get_val(['recommendationKey'])
         result['NumAnalysts'] = get_val(['numberOfAnalystOpinions'])
 
-        # --- B. 獲取現金流 (模糊比對) ---
+        # --- B. 處理現金流 ---
         fcf = get_val(['freeCashflow'])
-        if fcf is None:
+        if fcf is None and not cf.empty:
             try:
-                cf = stock.cashflow
-                if not cf.empty:
-                    recent_cf = cf.iloc[:, 0] # 最近一期
-                    op_cf = None
-                    capex = None
-                    
-                    for idx in recent_cf.index:
-                        idx_str = str(idx).lower()
-                        if 'operating' in idx_str and 'cash' in idx_str:
-                            op_cf = recent_cf[idx]
-                        if 'capital' in idx_str and 'expenditure' in idx_str:
-                            capex = recent_cf[idx]
-                    
-                    if op_cf is not None and capex is not None:
-                        fcf = op_cf + capex 
-            except:
-                pass
+                recent_cf = cf.iloc[:, 0]
+                op_cf = None
+                capex = None
+                for idx in recent_cf.index:
+                    idx_str = str(idx).lower()
+                    if 'operating' in idx_str and 'cash' in idx_str:
+                        op_cf = recent_cf[idx]
+                    if 'capital' in idx_str and 'expenditure' in idx_str:
+                        capex = recent_cf[idx]
+                
+                if op_cf is not None and capex is not None:
+                    fcf = op_cf + capex 
+            except: pass
         result['FCF'] = fcf
 
         if fcf and result['MarketCap'] and fcf > 0:
             result['P/FCF'] = result['MarketCap'] / fcf
 
-        # --- C. 獲取合約負債 ---
-        try:
-            bs = stock.balance_sheet
-            if not bs.empty:
+        # --- C. 處理資產負債表 ---
+        if not bs.empty:
+            try:
                 for idx in bs.index:
                     idx_str = str(idx).lower()
                     if ('contract' in idx_str and 'liabilities' in idx_str) or \
                        ('deferred' in idx_str and 'revenue' in idx_str):
                         result['ContractLiabilities'] = bs.loc[idx].iloc[0]
                         break
-        except:
-            pass
+            except: pass
 
-        # --- D. 獲取分析師詳細預估 ---
-        try:
-            result['EarningsEst'] = stock.earnings_estimate
-            result['EPSTrend'] = stock.eps_trend
-            result['RecSummary'] = stock.recommendations_summary
-        except:
-            pass
+        # --- D. 處理分析師預估 ---
+        if est_data:
+            result['EarningsEst'] = est_data[0]
+            result['EPSTrend'] = est_data[1]
+            result['RecSummary'] = est_data[2]
 
     except Exception as e:
         print(f"Fundamentals critical error for {ticker}: {e}")
@@ -468,66 +492,92 @@ def calculate_indicators(df):
 
 # --- 6. 核心計算邏輯 (股票) ---
 def process_data_for_periods(base_df, history_data, market_caps):
-    results = []
-    tickers = base_df['Ticker'].tolist()
+    """
+    [OPTIMIZATION] 向量化運算取代迴圈，大幅提升大量股票的處理速度
+    """
+    if history_data.empty:
+        return pd.DataFrame()
+
+    # 1. 確保 Close 數據被提取出來並正規化為 (Date, Ticker) 的 DataFrame
+    closes = pd.DataFrame()
     
-    # [CRITICAL FIX] 偵測並修復 MultiIndex 順序
     if isinstance(history_data.columns, pd.MultiIndex):
-        level0_vals = history_data.columns.get_level_values(0)
-        # 如果 Level 0 包含 'Close'，表示結構是 (Price, Ticker)，需要交換
-        if 'Close' in level0_vals:
-            history_data = history_data.swaplevel(0, 1, axis=1)
-            history_data.sort_index(axis=1, inplace=True)
-            
-    valid_tickers = []
-    if isinstance(history_data.columns, pd.MultiIndex):
-        # 現在假設 Level 0 是 Ticker
-        fetched_tickers = set(history_data.columns.get_level_values(0))
-        valid_tickers = [t for t in tickers if t in fetched_tickers]
-    else:
-        valid_tickers = tickers if not history_data.empty else []
-
-    for ticker in valid_tickers:
-        try:
-            stock_df = pd.Series()
-            if isinstance(history_data.columns, pd.MultiIndex):
-                if ticker in history_data.columns.get_level_values(0):
-                    if 'Close' in history_data[ticker].columns:
-                        stock_df = history_data[ticker]['Close'].dropna()
+        level0 = history_data.columns.get_level_values(0)
+        # 判斷結構是 (Price, Ticker) 還是 (Ticker, Price)
+        if 'Close' in level0:
+            # 結構: (Price, Ticker) -> 直接取 Close 層
+            closes = history_data['Close']
+        else:
+            # 結構: (Ticker, Price) -> 需要 xs 或 swaplevel
+            # 檢查 level 1 是否有 Close
+            level1 = history_data.columns.get_level_values(1)
+            if 'Close' in level1:
+                closes = history_data.xs('Close', level=1, axis=1)
             else:
-                if 'Close' in history_data.columns:
-                    stock_df = history_data['Close'].dropna()
+                # 嘗試 Adj Close
+                if 'Adj Close' in level1:
+                    closes = history_data.xs('Adj Close', level=1, axis=1)
+    else:
+        # 單層 Index (可能是單一股票，或已處理過)
+        if 'Close' in history_data.columns:
+            closes = history_data[['Close']] # 轉為 DataFrame
+    
+    if closes.empty:
+        return pd.DataFrame()
 
-            if len(stock_df) < 2: continue
-            
-            last_price = stock_df.iloc[-1]
-            mkt_cap = market_caps.get(ticker, 0)
-            
-            chg_1d = stock_df.pct_change(1).iloc[-1] * 100
-            chg_1w = stock_df.pct_change(5).iloc[-1] * 100 if len(stock_df) > 5 else 0
-            chg_1m = stock_df.pct_change(21).iloc[-1] * 100 if len(stock_df) > 21 else 0
-            chg_ytd = ((last_price - stock_df.iloc[0]) / stock_df.iloc[0]) * 100
-            
-            row_slice = base_df[base_df['Ticker'] == ticker]
-            if row_slice.empty: continue
-            row = row_slice.iloc[0]
-            
-            results.append({
-                'Ticker': ticker, 
-                'Name': row.get('Name', ticker), 
-                'Sector': row.get('Sector', 'Unknown'), 
-                'Industry': row.get('Industry', 'Unknown'), 
-                'Market Cap': mkt_cap, 
-                'Close': last_price,
-                '1D Change': chg_1d, 
-                '1W Change': chg_1w, 
-                '1M Change': chg_1m, 
-                'YTD Change': chg_ytd
-            })
-        except Exception as e: 
-            continue
-            
-    return pd.DataFrame(results)
+    # 2. 向量化計算漲跌幅 (Vectorized Calculations)
+    # 使用 ffill 處理中間的 NaN，避免計算斷掉
+    closes = closes.ffill()
+    
+    # 確保最後一行有效 (有些股票可能當天還沒開盤或停牌)
+    # 這裡不做太嚴格的 dropna，保留大盤整體數據
+    
+    try:
+        # 取出最新的價格 (Series)
+        current_prices = closes.iloc[-1]
+        
+        # 1D Change
+        res_1d = closes.pct_change(1).iloc[-1] * 100
+        
+        # 1W (5 days)
+        res_1w = closes.pct_change(5).iloc[-1] * 100
+        
+        # 1M (21 days)
+        res_1m = closes.pct_change(21).iloc[-1] * 100
+        
+        # YTD / 1Y (Roll) - 使用第一筆與最後一筆比較 (近似 YTD)
+        # 注意：如果資料不足 1 年，iloc[0] 就是該股最早的資料
+        res_ytd = ((closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0]) * 100
+        
+        # 3. 組合結果
+        metrics_df = pd.DataFrame({
+            'Ticker': current_prices.index,
+            'Close': current_prices.values,
+            '1D Change': res_1d.values,
+            '1W Change': res_1w.values,
+            '1M Change': res_1m.values,
+            'YTD Change': res_ytd.values
+        })
+        
+        # 4. 合併基本資料 (Sector, Name, Market Cap)
+        # 確保 Ticker 欄位型態一致
+        base_df['Ticker'] = base_df['Ticker'].astype(str)
+        metrics_df['Ticker'] = metrics_df['Ticker'].astype(str)
+        
+        merged_df = pd.merge(base_df, metrics_df, on='Ticker', how='inner')
+        
+        # 填入 Market Cap
+        merged_df['Market Cap'] = merged_df['Ticker'].map(market_caps).fillna(0)
+        
+        # 過濾無效數據
+        merged_df = merged_df.dropna(subset=['Close'])
+        merged_df = merged_df[merged_df['Market Cap'] > 0]
+        
+        return merged_df
+
+    except Exception as e:
+        print(f"Vectorization error: {e}")
+        return pd.DataFrame()
 
 # --- 7. 繪圖函數 ---
 def plot_treemap(df, change_col, title, color_range):
