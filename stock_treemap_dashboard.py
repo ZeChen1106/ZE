@@ -1,8 +1,7 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
-# UI Style Reference: Modern Dark/Cyberpunk Dashboard
-# Fixed: "Market Sentiment" text clipping in Gauge Chart
-# Feature: Dark Mode & Tech Style UI Revamp
+# Style: Reverted to Clean Light Theme
+# Features: All robustness fixes (AAPL, Estimates Fallback) retained
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -23,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS 暗黑科技風格注入 ---
+# --- CSS 亮色簡潔風格注入 ---
 st.markdown("""
 <style>
     /* 引入現代字體 Inter */
@@ -31,12 +30,11 @@ st.markdown("""
     
     html, body, [class*="css"]  {
         font-family: 'Inter', sans-serif;
-        color: #e0e0e0; /* 全局字體亮色 */
     }
 
-    /* 背景微調 - 深色系 */
+    /* 背景微調 - 亮色系 */
     .stApp {
-        background-color: #0E1117;
+        background-color: #f8f9fa;
     }
 
     /* 頂部標題區塊調整 */
@@ -45,84 +43,75 @@ st.markdown("""
         padding-bottom: 2rem;
     }
 
-    /* --- Dashboard Card 風格 (深色卡片) --- */
+    /* --- Dashboard Card 風格 (亮色卡片) --- */
     .dashboard-card {
-        background-color: #161B22; /* GitHub Dark Dimmed 風格 */
+        background-color: #ffffff;
         padding: 20px;
         border-radius: 12px;
-        border: 1px solid #30363D;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         margin-bottom: 20px;
     }
 
-    /* 強制美化 st.metric 原生元件 (深色版) */
+    /* 強制美化 st.metric 原生元件 (亮色版) */
     [data-testid="stMetric"] {
-        background-color: #21262D;
-        border: 1px solid #30363D;
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
         padding: 15px 20px;
         border-radius: 10px;
-        transition: transform 0.2s ease, border-color 0.2s ease;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
     
     [data-testid="stMetric"]:hover {
         transform: translateY(-2px);
-        border-color: #58A6FF; /* 科技藍 hover */
-        box-shadow: 0 0 10px rgba(88, 166, 255, 0.2);
+        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        border-color: #2b7de9;
     }
 
     [data-testid="stMetricLabel"] {
         font-size: 14px;
-        color: #8B949E;
+        color: #666;
         font-weight: 600;
     }
 
     [data-testid="stMetricValue"] {
         font-size: 26px;
-        color: #FFFFFF;
+        color: #1f2937;
         font-weight: 700;
     }
 
     /* 標題樣式 */
     h1, h2, h3 {
-        color: #FFFFFF !important;
+        color: #111827;
         font-weight: 700;
         letter-spacing: -0.5px;
     }
     
     h3 {
         margin-top: 1rem;
-        border-left: 5px solid #58A6FF; /* 科技藍 */
+        border-left: 5px solid #2b7de9;
         padding-left: 10px;
         font-size: 1.25rem;
     }
 
     /* 側邊欄樣式優化 */
     [data-testid="stSidebar"] {
-        background-color: #161B22;
-        border-right: 1px solid #30363D;
-    }
-    
-    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
-        color: #FFFFFF !important;
+        background-color: #ffffff;
+        border-right: 1px solid #e5e7eb;
     }
 
-    /* 按鈕樣式 (科技感) */
+    /* 按鈕樣式 */
     .stButton button {
         border-radius: 8px;
         font-weight: 600;
-        background-color: #238636; /* GitHub Green */
-        color: white;
-        border: none;
-    }
-    .stButton button:hover {
-        background-color: #2EA043;
     }
 
     /* 連結按鈕 */
     .stLinkButton a {
-        background-color: #21262D;
-        color: #58A6FF;
-        border: 1px solid #30363D;
+        background-color: #f3f4f6;
+        color: #374151;
+        border: 1px solid #d1d5db;
         border-radius: 6px;
         padding: 5px 10px;
         font-size: 0.9em;
@@ -130,23 +119,13 @@ st.markdown("""
         transition: all 0.2s;
     }
     .stLinkButton a:hover {
-        background-color: #30363D;
-        color: #FFFFFF;
-        border-color: #8B949E;
-    }
-    
-    /* Expander 樣式 */
-    .streamlit-expanderHeader {
-        background-color: #161B22;
-        color: #E0E0E0;
-        border-radius: 8px;
+        background-color: #e5e7eb;
+        color: #111827;
     }
 
-    /* 狀態顏色文字 (更螢光的配色適合暗黑模式) */
-    .bullish { color: #3FB950; font-weight: bold; } /* Bright Green */
-    .bearish { color: #F85149; font-weight: bold; } /* Bright Red */
-    .neutral { color: #D29922; font-weight: bold; } /* Gold/Yellow */
-
+    .bullish { color: #10b981; font-weight: bold; }
+    .bearish { color: #ef4444; font-weight: bold; }
+    .neutral { color: #f59e0b; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -492,58 +471,36 @@ def plot_treemap(df, change_col, title, color_range):
         textfont=dict(family="Arial Black", size=15), 
         hovertemplate='<b>%{label}</b><br>代號: %{customdata[0]}<br>股價: %{customdata[1]:.2f}<br>漲跌幅: %{customdata[2]:.2f}%'
     )
-    # Dark Mode Layout
-    fig.update_layout(
-        height=600, 
-        margin=dict(t=20, l=10, r=10, b=10),
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
-    )
+    fig.update_layout(height=600, margin=dict(t=20, l=10, r=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_gauge(score):
     fig = go.Figure(go.Indicator(
         mode = "gauge+number", value = score,
         domain = {'x': [0, 1], 'y': [0, 1]}, 
-        title = {'text': "市場情緒 (Proxy)", 'font': {'size': 18, 'color': 'white'}},
+        title = {'text': "市場情緒 (Proxy)", 'font': {'size': 18}},
         gauge = {
-            'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "white"}, 
-            'bar': {'color': "#58A6FF"}, # Tech Blue
-            'bgcolor': "#161B22",
-            'borderwidth': 2,
-            'bordercolor': "#30363D",
+            'axis': {'range': [None, 100], 'tickwidth': 1}, 
+            'bar': {'color': "darkblue"},
             'steps': [
-                {'range': [0, 25], 'color': '#DA3633'}, # Red
-                {'range': [25, 45], 'color': '#BC4C00'}, # Orange
-                {'range': [45, 55], 'color': '#6E7681'}, # Grey
-                {'range': [55, 75], 'color': '#2EA043'}, # Green
-                {'range': [75, 100], 'color': '#238636'} # Dark Green
+                {'range': [0, 25], 'color': '#ff4b4b'}, # Red
+                {'range': [25, 45], 'color': '#ffbaba'}, # Light Red
+                {'range': [45, 55], 'color': '#e0e0e0'}, # Grey
+                {'range': [55, 75], 'color': '#baffba'}, # Light Green
+                {'range': [75, 100], 'color': '#008000'} # Green
             ]
         }
     ))
-    # 修復：增加 margin-top 避免標題被切掉
     fig.update_layout(
         height=300, 
-        margin=dict(t=60, b=20, l=30, r=30), 
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font={'color': "white"}
+        margin=dict(t=60, b=20, l=30, r=30)
     )
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_line_chart(data, title, color):
     fig = px.line(data, title=title)
     fig.update_traces(line_color=color, line_width=2)
-    fig.update_layout(
-        height=350, 
-        margin=dict(l=20, r=20, t=40, b=20), 
-        xaxis_title=None, yaxis_title=None,
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
-    )
+    fig.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None)
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_tech_chart(df, ticker, title):
@@ -557,41 +514,39 @@ def plot_tech_chart(df, ticker, title):
 
     # 1. 主圖：K線 + MA
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='#FFA500', width=1), name='MA20'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='#58A6FF', width=1.5), name='MA50'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='#FF4B4B', width=2), name='MA200'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='blue', width=1.5), name='MA50'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='red', width=2), name='MA200'), row=1, col=1)
     
     # 布林通道
     fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='gray', width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='gray', width=0), fill='tonexty', fillcolor='rgba(128,128,128,0.1)', name='BB Band'), row=1, col=1)
 
     # 2. 成交量
-    colors = ['#238636' if o >= c else '#DA3633' for o, c in zip(df['Open'], df['Close'])]
+    colors = ['green' if o >= c else 'red' for o, c in zip(df['Open'], df['Close'])]
     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
     # 3. RSI
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#A371F7', width=2), name='RSI'), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="#FF4B4B", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#3FB950", row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=2), name='RSI'), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
 
     # 4. MACD
-    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='#58A6FF', width=1.5), name='MACD'), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], line=dict(color='#FFA500', width=1.5), name='Signal'), row=4, col=1)
-    colors_hist = ['#238636' if v >= 0 else '#DA3633' for v in df['MACD_Hist']]
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='blue', width=1.5), name='MACD'), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], line=dict(color='orange', width=1.5), name='Signal'), row=4, col=1)
+    colors_hist = ['green' if v >= 0 else 'red' for v in df['MACD_Hist']]
     fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors_hist, name='Hist'), row=4, col=1)
 
     fig.update_layout(
         height=900, 
         xaxis_rangeslider_visible=False,
         hovermode='x unified',
-        template="plotly_dark", # Dark theme
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        margin=dict(t=30, b=30),
-        font=dict(color="#e0e0e0")
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(t=30, b=30)
     )
-    fig.update_xaxes(showgrid=True, gridcolor='#30363D')
-    fig.update_yaxes(showgrid=True, gridcolor='#30363D')
+    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0')
+    fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
     
     st.plotly_chart(fig, use_container_width=True)
 
@@ -767,7 +722,7 @@ def render_stock_strategy_page():
                                         
                                         fig_est = px.bar(plot_df, x='Period', y='Average', title="分析師 EPS 預估", text_auto='.2f', color='Average', color_continuous_scale='Blues')
                                         fig_est.update_traces(error_y=dict(type='data', array=plot_df['High']-plot_df['Average'], arrayminus=plot_df['Average']-plot_df['Low'], visible=True))
-                                        fig_est.update_layout(template="plotly_dark", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+                                        fig_est.update_layout(plot_bgcolor='white')
                                         st.plotly_chart(fig_est, use_container_width=True)
                                     else:
                                         st.info("無可用季度數據，請參考下方目標價。")
@@ -785,7 +740,7 @@ def render_stock_strategy_page():
                                         fig_trend = go.Figure()
                                         for col in trend_plot.columns:
                                             fig_trend.add_trace(go.Scatter(x=trend_plot.index, y=trend_plot[col], mode='lines+markers', name=col))
-                                        fig_trend.update_layout(title="EPS 預估修正趨勢", template="plotly_dark", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+                                        fig_trend.update_layout(title="EPS 預估修正趨勢", plot_bgcolor='white')
                                         st.plotly_chart(fig_trend, use_container_width=True)
                                 except Exception as e:
                                     st.caption(f"趨勢圖繪製失敗: {e}")
@@ -811,14 +766,14 @@ def render_stock_strategy_page():
                                 x=[low_target],
                                 name='Low',
                                 orientation='h',
-                                marker_color='#F85149'
+                                marker_color='#ff4b4b'
                             ))
                             fig_target.add_trace(go.Bar(
                                 y=['Price Target'],
                                 x=[target_mean - low_target],
                                 name='Mean',
                                 orientation='h',
-                                marker_color='#58A6FF',
+                                marker_color='#2b7de9',
                                 base=low_target
                             ))
                             fig_target.add_trace(go.Bar(
@@ -826,11 +781,11 @@ def render_stock_strategy_page():
                                 x=[high_target - target_mean],
                                 name='High',
                                 orientation='h',
-                                marker_color='#238636',
+                                marker_color='#008000',
                                 base=target_mean
                             ))
                             
-                            fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="white", annotation_text="Now")
+                            fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="black", annotation_text="Now")
                             
                             fig_target.update_layout(
                                 barmode='stack', 
@@ -839,9 +794,7 @@ def render_stock_strategy_page():
                                 height=200,
                                 margin=dict(l=20, r=20, t=30, b=20),
                                 showlegend=False,
-                                template="plotly_dark",
-                                plot_bgcolor='rgba(0,0,0,0)',
-                                paper_bgcolor='rgba(0,0,0,0)'
+                                plot_bgcolor='white'
                             )
                             st.plotly_chart(fig_target, use_container_width=True)
                     
@@ -926,14 +879,8 @@ def render_macro_page():
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
     st.markdown("#### VIX 波動率走勢 (1 Year)")
     fig_vix = px.line(vix_series, title="CBOE VIX Index")
-    fig_vix.add_hline(y=20, line_dash="dash", line_color="#F85149")
-    fig_vix.update_layout(
-        template="plotly_dark", 
-        plot_bgcolor='rgba(0,0,0,0)', 
-        paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#e0e0e0")
-    )
-    fig_vix.update_traces(line_color="#58A6FF")
+    fig_vix.add_hline(y=20, line_dash="dash", line_color="red")
+    fig_vix.update_layout(plot_bgcolor='white')
     st.plotly_chart(fig_vix, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -949,7 +896,7 @@ def render_commodity_page():
         with c1:
             if 'BDRY' in comm_data.columns.levels[0]:
                 data = comm_data['BDRY']['Close'].dropna()
-                plot_line_chart(data, "BDI 替代指標 (BDRY ETF)", "#58A6FF")
+                plot_line_chart(data, "BDI 替代指標 (BDRY ETF)", "#1f77b4")
         with c2:
             st.metric("BDI 狀態", "監控中")
             st.link_button("查看 Investing.com", "https://www.investing.com/indices/baltic-dry")
@@ -962,11 +909,11 @@ def render_commodity_page():
         with c3:
             if 'CL=F' in comm_data.columns.levels[0]:
                 data = comm_data['CL=F']['Close'].dropna()
-                plot_line_chart(data, "WTI 原油", "#F85149")
+                plot_line_chart(data, "WTI 原油", "#ef4444")
         with c4:
             if 'HG=F' in comm_data.columns.levels[0]:
                 data = comm_data['HG=F']['Close'].dropna()
-                plot_line_chart(data, "銅 (Copper)", "#3FB950")
+                plot_line_chart(data, "銅 (Copper)", "#10b981")
         st.markdown('</div>', unsafe_allow_html=True)
 
 def render_liquidity_page():
