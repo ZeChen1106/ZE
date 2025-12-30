@@ -1,9 +1,13 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # Style: High Contrast Light Theme (All Text Darkened)
-# Fixes: 
-#   1. KeyError 'Name' in S&P 500 Treemap (Renamed 'Security' to 'Name')
-#   2. Enforced High Contrast (Black Text on White Bg) for ALL Plotly charts
+# Optimization: 
+#   1. Parallel Fetching for Fundamentals
+#   2. Vectorized Calculation for Market Dashboard
+#   3. Reduced data fetch period for Macro (1y)
+# Fixes:
+#   1. Expander Header Style: Dark Background + White Text
+#   2. Removed empty/filler metric blocks in Fundamentals
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -64,9 +68,13 @@ st.markdown("""
         font-size: 1rem !important;
     }
     
-    /* 5. Expander 標題 */
+    /* 5. Expander 標題優化 (深底白字) */
+    .streamlit-expanderHeader {
+        background-color: #262730 !important; /* 深色背景 */
+        border-radius: 8px;
+    }
     .streamlit-expanderHeader p {
-        color: #000000 !important;
+        color: #FFFFFF !important; /* 白色字體 */
         font-weight: 700 !important;
         font-size: 1.1rem !important;
     }
@@ -241,6 +249,9 @@ def fetch_market_caps(tickers):
 
 @st.cache_data(ttl=21600) 
 def fetch_price_history(tickers, period="1y"):
+    """
+    下載大量股票歷史數據
+    """
     try:
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, threads=True, progress=False)
         return data
@@ -768,7 +779,9 @@ def render_stock_strategy_page():
                 f4.metric("P/FCF", f"{p_fcf:.1f}x" if p_fcf is not None else "N/A")
 
                 st.write("")
-                f5, f6, f7, f8 = st.columns(4)
+                
+                # [Clean-up] Removed redundant date block, using 3 columns only
+                f5, f6, f7 = st.columns(3)
 
                 gm = fund_data.get('GrossMargin')
                 f5.metric("毛利率", f"{gm*100:.1f}%" if gm is not None else "N/A")
@@ -782,7 +795,6 @@ def render_stock_strategy_page():
                     val_str = f"${cl/1e9:.1f}B" if cl > 1e9 else f"${cl/1e6:.1f}M"
                 f7.metric("合約負債 (RPO)", val_str)
                 
-                f8.metric("資料日期", datetime.now().strftime("%m-%d"))
                 st.write("")
 
             except Exception as e:
