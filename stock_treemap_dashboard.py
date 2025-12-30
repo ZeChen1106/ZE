@@ -1,8 +1,7 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # UI Style Reference: Modern Streamlit Dashboard
-# Fixed: KeyError handling for yfinance MultiIndex & Robust Data Processing
-# Fixed: Robust handling for Analyst Estimates (Avg/Low/High index matching)
+# Fixed: Robust Error Handling for Fundamentals & Estimates Rendering
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -44,9 +43,18 @@ st.markdown("""
         padding-bottom: 2rem;
     }
 
-    /* --- Dashboard Card 風格 (針對 st.metric 與 自定義區塊) --- */
-    
-    /* 強制美化 st.metric 原生元件 */
+    /* --- Dashboard Card 風格 --- */
+    /* 這是我們用來包覆內容的白色卡片容器 */
+    .dashboard-card {
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        margin-bottom: 20px;
+    }
+
+    /* 強制美化 st.metric 原生元件，使其看起來像小卡片 */
     [data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e0e0e0;
@@ -72,16 +80,6 @@ st.markdown("""
         font-size: 26px;
         color: #1f2937;
         font-weight: 700;
-    }
-
-    /* 自定義卡片容器 */
-    .dashboard-card {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #e5e7eb;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        margin-bottom: 20px;
     }
 
     /* 標題樣式 */
@@ -196,18 +194,10 @@ def get_sp500_constituents():
     url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
     try:
         df = pd.read_csv(url)
-        # Rename columns to standard format, handling potential variations
         rename_map = {'Symbol': 'Ticker', 'GICS Sector': 'Sector', 'GICS Sub-Industry': 'Industry'}
         df = df.rename(columns=rename_map)
         
-        # Fallback if 'GICS Sector' was missing but 'Sector' exists in raw data
-        if 'Sector' not in df.columns and 'GICS Sector' not in df.columns:
-             # Just in case the CSV structure changed significantly
-             pass 
-
         df['Ticker'] = df['Ticker'].str.replace('.', '-', regex=False)
-        
-        # Ensure 'Industry' exists
         if 'Industry' not in df.columns:
             df['Industry'] = df['Sector'] if 'Sector' in df.columns else 'Unknown'
             
@@ -234,7 +224,6 @@ def fetch_market_caps(tickers):
 @st.cache_data(ttl=21600) 
 def fetch_price_history(tickers, period="1y"):
     try:
-        # group_by='ticker' returns MultiIndex (Ticker, Price)
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, threads=True, progress=False)
         return data
     except Exception:
@@ -259,8 +248,6 @@ def get_stock_data(ticker, period="2y"):
     try:
         data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
         
-        # [Critical Fix] Robust MultiIndex Flattening
-        # 掃描所有 Levels，找到包含 'Close' 的那一層，並設為 Columns
         if isinstance(data.columns, pd.MultiIndex):
             target_level = None
             for i in range(data.columns.nlevels):
@@ -271,18 +258,12 @@ def get_stock_data(ticker, period="2y"):
             if target_level is not None:
                 data.columns = data.columns.get_level_values(target_level)
             else:
-                # 若找不到 Close，可能是資料全空或結構極度異常
                 if not data.empty:
-                    # 嘗試降維 (Droplevel)
                     data.columns = data.columns.droplevel(0)
         
-        # 再次確認 'Close' 是否存在，避免 KeyError
         if not data.empty and 'Close' in data.columns:
             data = data.dropna(subset=['Close'])
         else:
-            if not data.empty:
-                print(f"Warning: 'Close' column missing for {ticker} even after flattening.")
-            # 若無 Close 欄位，視為無效資料
             return pd.DataFrame()
 
         return data
@@ -293,50 +274,41 @@ def get_stock_data(ticker, period="2y"):
 @st.cache_data(ttl=12 * 3600)
 def get_fundamentals(ticker):
     """
-    嘗試獲取基本面數據 (P/FCF, 毛利率, 合約負債, P/E, PEG, Estimates 等)
-    注意：這比抓股價慢，且 yfinance 對台股的基本面支援度較差
+    嘗試獲取基本面數據
+    注意：使用 try-except 防止因 yfinance 錯誤導致程式崩潰
     """
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # 1. 嘗試計算 FCF
-        # 方法 A: info 中直接有 (較少見)
+        # 1. FCF 計算
         fcf = info.get('freeCashflow', None)
-        
-        # 方法 B: 手動計算 (Operating Cash Flow + Capital Expenditure)
         if fcf is None:
             try:
                 cf = stock.cashflow
                 if not cf.empty:
-                    # 嘗試抓取最近一期的年報或季報
                     op_cf = None
                     capex = None
-                    
-                    # 尋找營運現金流
                     for col in ['Operating Cash Flow', 'Total Cash From Operating Activities']:
                         if col in cf.index:
                             op_cf = cf.loc[col].iloc[0]
                             break
-                    
-                    # 尋找資本支出
                     for col in ['Capital Expenditure', 'Capital Expenditures']:
                         if col in cf.index:
                             capex = cf.loc[col].iloc[0]
                             break
-                            
                     if op_cf is not None and capex is not None:
-                        fcf = op_cf + capex # CapEx is usually negative
+                        fcf = op_cf + capex 
             except:
                 pass
 
-        # 2. 計算 P/FCF
+        # 2. P/FCF
         market_cap = info.get('marketCap', None)
         p_fcf = None
         if fcf and market_cap and fcf > 0:
             p_fcf = market_cap / fcf
 
-        # 3. 嘗試抓取合約負債 (RPO Proxy)
+        # 3. 合約負債
         contract_liabilities = None
         try:
             bs = stock.balance_sheet
@@ -347,11 +319,10 @@ def get_fundamentals(ticker):
         except:
             pass
 
-        # 4. 抓取分析師預估數據 (Estimates)
+        # 4. 分析師預估數據 (獨立 try-catch，因為容易出錯)
         earnings_est = None
         eps_trend = None
         try:
-            # 這些屬性會回傳 DataFrame，包含未來幾季/年的預估
             earnings_est = stock.earnings_estimate
             eps_trend = stock.eps_trend
         except:
@@ -363,7 +334,7 @@ def get_fundamentals(ticker):
             'MarketCap': market_cap,
             'GrossMargin': info.get('grossMargins', None),
             'OperatingMargin': info.get('operatingMargins', None),
-            'EarningsGrowth': info.get('earningsGrowth', None), # [新增] 獲利成長率，用於手算 PEG
+            'EarningsGrowth': info.get('earningsGrowth', None),
             'ContractLiabilities': contract_liabilities,
             'TrailingPE': info.get('trailingPE', None),
             'PEG': info.get('pegRatio', None),
@@ -373,12 +344,11 @@ def get_fundamentals(ticker):
         }
     except Exception as e:
         print(f"Fundamentals error for {ticker}: {e}")
+        # 返回空字典而非崩潰，頁面會顯示 N/A
         return {}
 
 def check_ticker_validity(ticker):
-    """檢查代號是否有效 (嘗試抓取 5 天數據)"""
     try:
-        # 使用 get_stock_data 的強固邏輯來檢查
         data = get_stock_data(ticker, period="5d")
         return not data.empty
     except:
@@ -396,29 +366,23 @@ def calculate_fear_greed(vix_close, sp500_close):
 
 # --- 5. 技術指標計算 ---
 def calculate_indicators(df):
-    """計算 MA, RSI, MACD, Bollinger Bands"""
     df = df.copy()
-    
-    # Moving Averages (PDF Page 8)
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA50'] = df['Close'].rolling(window=50).mean()
     df['MA200'] = df['Close'].rolling(window=200).mean()
     
-    # RSI (PDF Page 9)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     
-    # MACD (PDF Page 9)
     exp12 = df['Close'].ewm(span=12, adjust=False).mean()
     exp26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp12 - exp26
     df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
     
-    # Bollinger Bands (用於輔助判斷波動與壓力支撐)
     df['BB_Upper'] = df['MA20'] + (df['Close'].rolling(window=20).std() * 2)
     df['BB_Lower'] = df['MA20'] - (df['Close'].rolling(window=20).std() * 2)
     
@@ -429,27 +393,20 @@ def process_data_for_periods(base_df, history_data, market_caps):
     results = []
     tickers = base_df['Ticker'].tolist()
     
-    # [Robust check] Handle if history_data has MultiIndex columns (Ticker, Price) or flat
     valid_tickers = []
     if isinstance(history_data.columns, pd.MultiIndex):
-        # Assume Level 0 is Ticker because group_by='ticker'
-        # Get unique level 0 values efficiently
         fetched_tickers = set(history_data.columns.get_level_values(0))
         valid_tickers = [t for t in tickers if t in fetched_tickers]
     else:
-        # Fallback for unexpected flat structure (e.g. single ticker result)
         valid_tickers = tickers
 
     for ticker in valid_tickers:
         try:
-            # Safe access to DataFrame
             if isinstance(history_data.columns, pd.MultiIndex):
                 if ticker not in history_data.columns.get_level_values(0):
                     continue
                 stock_df = history_data[ticker]['Close'].dropna()
             else:
-                # If flat, maybe column name is 'Close'? But this loop iterates tickers.
-                # If flattened, we might not have ticker info easily. Skip for safety.
                 continue
 
             if len(stock_df) < 2: continue
@@ -462,7 +419,6 @@ def process_data_for_periods(base_df, history_data, market_caps):
             chg_1m = stock_df.pct_change(21).iloc[-1] * 100 if len(stock_df) > 21 else 0
             chg_ytd = ((last_price - stock_df.iloc[0]) / stock_df.iloc[0]) * 100
             
-            # Safe row access
             row_slice = base_df[base_df['Ticker'] == ticker]
             if row_slice.empty: continue
             row = row_slice.iloc[0]
@@ -470,7 +426,7 @@ def process_data_for_periods(base_df, history_data, market_caps):
             results.append({
                 'Ticker': ticker, 
                 'Name': row.get('Name', ticker), 
-                'Sector': row.get('Sector', 'Unknown'), # Safe get
+                'Sector': row.get('Sector', 'Unknown'), 
                 'Industry': row.get('Industry', 'Unknown'), 
                 'Market Cap': mkt_cap, 
                 'Close': last_price,
@@ -480,7 +436,6 @@ def process_data_for_periods(base_df, history_data, market_caps):
                 'YTD Change': chg_ytd
             })
         except Exception as e: 
-            # Skip problematic ticker without crashing app
             continue
             
     return pd.DataFrame(results)
@@ -525,21 +480,19 @@ def plot_line_chart(data, title, color):
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_tech_chart(df, ticker, title):
-    """繪製包含 MA, Volume, RSI, MACD 的互動式圖表"""
-    # 創建子圖結構 (主圖, 成交量, RSI, MACD)
     fig = make_subplots(
         rows=4, cols=1, 
         shared_xaxes=True, 
         vertical_spacing=0.03, 
         row_heights=[0.5, 0.15, 0.15, 0.2],
-        subplot_titles=(f"{title} 價格趨勢 (含 MA & Bollinger)", "成交量 (Volume)", "RSI 強弱指標", "MACD 動能")
+        subplot_titles=(f"{title} 價格趨勢", "成交量", "RSI", "MACD")
     )
 
     # 1. 主圖：K線 + MA
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='orange', width=1), name='MA20 (月線)'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='blue', width=1.5), name='MA50 (季線)'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='red', width=2), name='MA200 (年線)'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='blue', width=1.5), name='MA50'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='red', width=2), name='MA200'), row=1, col=1)
     
     # 布林通道
     fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='gray', width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
@@ -551,26 +504,23 @@ def plot_tech_chart(df, ticker, title):
 
     # 3. RSI
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=2), name='RSI'), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1) # 超買
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1) # 超賣
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
 
     # 4. MACD
     fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='blue', width=1.5), name='MACD'), row=4, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], line=dict(color='orange', width=1.5), name='Signal'), row=4, col=1)
     colors_hist = ['green' if v >= 0 else 'red' for v in df['MACD_Hist']]
-    fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors_hist, name='Histogram'), row=4, col=1)
+    fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors_hist, name='Hist'), row=4, col=1)
 
-    # 設定
     fig.update_layout(
         height=900, 
         xaxis_rangeslider_visible=False,
-        # title_text=f"{ticker} 技術分析儀表板", (Title 已移至子圖標題或外部，保持畫面簡潔)
         hovermode='x unified',
         plot_bgcolor='white',
         paper_bgcolor='white',
         margin=dict(t=30, b=30)
     )
-    # 網格線設定
     fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0')
     fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
     
@@ -579,33 +529,30 @@ def plot_tech_chart(df, ticker, title):
 # --- 8. 頁面渲染邏輯 ---
 
 def render_stock_strategy_page():
-    # 使用 container 包覆整個頂部輸入區，製造卡片感
-    with st.container():
-        st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        c1, c2 = st.columns([4, 1])
-        with c1:
-            st.subheader("🔍 個股技術戰略分析 (Technical Strategy)")
-            st.caption("基於《Technical Analysis Profitability Rules》與基本面估值模型")
-        
-        col_input1, col_input2, col_btn = st.columns([3, 1, 1])
-        with col_input1:
-            ticker_input = st.text_input("輸入股票代號 (例如: NVDA, AAPL, 2330.TW)", value="AAPL")
-        with col_input2:
-            timeframe = st.selectbox("分析週期", ["1y", "2y", "5y"], index=0)
-        with col_btn:
-            st.write("") 
-            st.write("") 
-            analyze_btn = st.button("🚀 開始分析", type="primary", use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Input Card
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    c1, c2 = st.columns([4, 1])
+    with c1:
+        st.subheader("🔍 個股技術戰略分析 (Technical Strategy)")
+        st.caption("基於《Technical Analysis Profitability Rules》與基本面估值模型")
+    
+    col_input1, col_input2, col_btn = st.columns([3, 1, 1])
+    with col_input1:
+        ticker_input = st.text_input("輸入股票代號 (例如: NVDA, AAPL, 2330.TW)", value="AAPL")
+    with col_input2:
+        timeframe = st.selectbox("分析週期", ["1y", "2y", "5y"], index=0)
+    with col_btn:
+        st.write("") 
+        st.write("") 
+        analyze_btn = st.button("🚀 開始分析", type="primary", use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # 若按下按鈕或已有輸入，且代號不為空
     if analyze_btn or (ticker_input and ticker_input != ""):
         ticker = ticker_input.upper().strip()
         
         if ticker.isdigit() and len(ticker) == 4:
-            test_ticker = f"{ticker}.TW"
-            st.caption(f"💡 偵測到數字代號，將以台股上市模式查詢：{test_ticker}")
-            ticker = test_ticker
+            ticker = f"{ticker}.TW"
+            st.caption(f"💡 偵測到數字代號，將以台股上市模式查詢：{ticker}")
 
         with st.spinner(f"正在連線交易所查詢 {ticker} ..."):
             is_valid = check_ticker_validity(ticker)
@@ -622,20 +569,18 @@ def render_stock_strategy_page():
 
         with st.spinner(f"✅ 代號確認！正在計算 {ticker} 技術指標與基本面..."):
             df = get_stock_data(ticker, period=timeframe)
-            fund_data = get_fundamentals(ticker)
+            fund_data = get_fundamentals(ticker) # 安全獲取，出錯回傳 {}
 
             if df.empty or len(df) < 50:
-                st.warning("⚠️ 數據不足，無法進行完整技術分析 (可能是新上市股票)。")
+                st.warning("⚠️ 數據不足，無法進行完整技術分析。")
                 return
             
             df = calculate_indicators(df)
             last_row = df.iloc[-1]
             prev_row = df.iloc[-2]
 
-            # --- A. 狀態儀表板 (Dashboard Grid) ---
+            # --- A. 狀態儀表板 ---
             st.markdown("### 1. 即時技術狀態 (Technical Status)")
-            
-            # 使用 container 包覆，讓 metrics 看起來整齊
             m1, m2, m3, m4 = st.columns(4)
             
             chg = (last_row['Close'] - prev_row['Close']) / prev_row['Close'] * 100
@@ -664,112 +609,123 @@ def render_stock_strategy_page():
             st.write("")
 
             # --- 基本面快照區塊 ---
-            st.markdown("### 2. 基本面體質快照 (Fundamental Snapshot)")
-            
-            f1, f2, f3, f4 = st.columns(4)
-            
-            fwd_eps = fund_data.get('ForwardEPS')
-            f1.metric("Forward EPS", f"${fwd_eps:.2f}" if fwd_eps else "N/A")
-
-            pe = fund_data.get('TrailingPE')
-            f2.metric("P/E (本益比)", f"{pe:.1f}x" if pe else "N/A")
-
-            peg = fund_data.get('PEG')
-            peg_est = False
-            if peg is None:
-                pe_val = fund_data.get('TrailingPE')
-                growth = fund_data.get('EarningsGrowth')
-                if pe_val and growth and growth > 0:
-                    peg = pe_val / (growth * 100)
-                    peg_est = True
-            f3.metric("PEG (Est.)" if peg_est else "PEG", f"{peg:.2f}" if peg else "N/A")
-
-            p_fcf = fund_data.get('P/FCF')
-            f4.metric("P/FCF", f"{p_fcf:.1f}x" if p_fcf else "N/A")
-
-            st.write("")
-            f5, f6, f7, f8 = st.columns(4) # 調整為4欄位讓排版一致
-
-            gm = fund_data.get('GrossMargin')
-            f5.metric("毛利率", f"{gm*100:.1f}%" if gm else "N/A")
-
-            om = fund_data.get('OperatingMargin')
-            f6.metric("營益率", f"{om*100:.1f}%" if om else "N/A")
+            # 使用 try-except 包覆，避免單一數值錯誤導致整個區塊消失
+            try:
+                st.markdown("### 2. 基本面體質快照 (Fundamental Snapshot)")
+                f1, f2, f3, f4 = st.columns(4)
                 
-            cl = fund_data.get('ContractLiabilities')
-            val_str = "N/A"
-            if cl: val_str = f"${cl/1e9:.1f}B" if cl > 1e9 else f"${cl/1e6:.1f}M"
-            f7.metric("合約負債 (RPO)", val_str)
-            
-            # 空一個位置或放其他
-            f8.metric("資料日期", datetime.now().strftime("%m-%d"))
+                fwd_eps = fund_data.get('ForwardEPS')
+                f1.metric("Forward EPS", f"${fwd_eps:.2f}" if fwd_eps is not None else "N/A")
 
-            st.write("")
-            
-            # --- 3. 分析師 EPS 預估 (包在 Expander 或 Card 中) ---
-            with st.expander("📊 點擊展開：分析師 EPS 預估詳情 (Analyst Estimates)", expanded=True):
+                pe = fund_data.get('TrailingPE')
+                f2.metric("P/E (本益比)", f"{pe:.1f}x" if pe is not None else "N/A")
+
+                peg = fund_data.get('PEG')
+                peg_est = False
+                if peg is None:
+                    pe_val = fund_data.get('TrailingPE')
+                    growth = fund_data.get('EarningsGrowth')
+                    if pe_val and growth and growth > 0:
+                        peg = pe_val / (growth * 100)
+                        peg_est = True
+                
+                peg_str = f"{peg:.2f}" if peg is not None else "N/A"
+                f3.metric("PEG (Est.)" if peg_est else "PEG", peg_str)
+
+                p_fcf = fund_data.get('P/FCF')
+                f4.metric("P/FCF", f"{p_fcf:.1f}x" if p_fcf is not None else "N/A")
+
+                st.write("")
+                f5, f6, f7, f8 = st.columns(4)
+
+                gm = fund_data.get('GrossMargin')
+                f5.metric("毛利率", f"{gm*100:.1f}%" if gm is not None else "N/A")
+
+                om = fund_data.get('OperatingMargin')
+                f6.metric("營益率", f"{om*100:.1f}%" if om is not None else "N/A")
+                    
+                cl = fund_data.get('ContractLiabilities')
+                val_str = "N/A"
+                if cl is not None:
+                    val_str = f"${cl/1e9:.1f}B" if cl > 1e9 else f"${cl/1e6:.1f}M"
+                f7.metric("合約負債 (RPO)", val_str)
+                
+                f8.metric("資料日期", datetime.now().strftime("%m-%d"))
+                st.write("")
+
+            except Exception as e:
+                st.error(f"基本面數據渲染錯誤: {e}")
+
+            # --- 3. 分析師 EPS 預估 ---
+            # 使用 try-except 包覆圖表繪製
+            try:
                 est_df = fund_data.get('EarningsEst')
                 trend_df = fund_data.get('EPSTrend')
                 has_est_data = est_df is not None and not est_df.empty
                 has_trend_data = trend_df is not None and not trend_df.empty
 
-                if not has_est_data and not has_trend_data:
-                    st.info("⚠️ 查無分析師預估數據 (僅美股主要代號提供完整數據)")
-                else:
-                    tab1, tab2 = st.tabs(["未來預估 (Estimates)", "修正趨勢 (Revisions)"])
-                    with tab1:
-                        if has_est_data:
-                            target_cols = [c for c in est_df.columns if 'q' in c] or [c for c in est_df.columns if 'y' in c]
-                            if target_cols:
+                with st.expander("📊 點擊展開：分析師 EPS 預估詳情 (Analyst Estimates)", expanded=True):
+                    if not has_est_data and not has_trend_data:
+                        st.info("⚠️ 查無分析師預估數據 (僅美股主要代號提供完整數據)")
+                    else:
+                        tab1, tab2 = st.tabs(["未來預估 (Estimates)", "修正趨勢 (Revisions)"])
+                        with tab1:
+                            if has_est_data:
                                 try:
-                                    # Create a copy to avoid modifying cached data
+                                    # Copy data to avoid mutation issues
                                     plot_data = est_df.copy()
                                     plot_data.index = plot_data.index.astype(str).str.lower()
                                     
-                                    # Identify rows for Avg, Low, High
+                                    # Fuzzy match indices
                                     idx_map = {}
                                     for idx in plot_data.index:
                                         if 'avg' in idx: idx_map['avg'] = idx
                                         elif 'low' in idx: idx_map['low'] = idx
                                         elif 'high' in idx: idx_map['high'] = idx
                                     
-                                    if 'avg' in idx_map:
+                                    target_cols = [c for c in plot_data.columns if 'q' in c] or [c for c in plot_data.columns if 'y' in c]
+                                    
+                                    if 'avg' in idx_map and target_cols:
                                         rows = [idx_map['avg']]
                                         if 'low' in idx_map: rows.append(idx_map['low'])
                                         if 'high' in idx_map: rows.append(idx_map['high'])
                                         
                                         plot_df = plot_data.loc[rows, target_cols].T.reset_index()
                                         
-                                        # Robust renaming
                                         rename_map = {'index': 'Period', idx_map['avg']: 'Average'}
                                         if 'low' in idx_map: rename_map[idx_map['low']] = 'Low'
                                         if 'high' in idx_map: rename_map[idx_map['high']] = 'High'
                                         plot_df = plot_df.rename(columns=rename_map)
                                         
-                                        # Fill missing bounds
                                         if 'Low' not in plot_df.columns: plot_df['Low'] = plot_df['Average']
                                         if 'High' not in plot_df.columns: plot_df['High'] = plot_df['Average']
                                         
-                                        fig_est = px.bar(plot_df, x='Period', y='Average', title="分析師 EPS 預估 (12個月)", text_auto='.2f', color='Average', color_continuous_scale='Blues')
+                                        fig_est = px.bar(plot_df, x='Period', y='Average', title="分析師 EPS 預估", text_auto='.2f', color='Average', color_continuous_scale='Blues')
                                         fig_est.update_traces(error_y=dict(type='data', array=plot_df['High']-plot_df['Average'], arrayminus=plot_df['Average']-plot_df['Low'], visible=True))
                                         fig_est.update_layout(plot_bgcolor='white')
                                         st.plotly_chart(fig_est, use_container_width=True)
                                     else:
-                                        st.info("數據格式不符：找不到平均預估值 (Avg Estimate)")
+                                        st.caption("無可用季度/年度預估數據")
                                 except Exception as e:
-                                    st.info(f"繪圖錯誤: {str(e)}")
-                    with tab2:
-                        if has_trend_data:
-                            trend_plot = trend_df.T
-                            time_order = ['90daysAgo', '60daysAgo', '30daysAgo', '7daysAgo', 'current']
-                            valid_order = [t for t in time_order if t in trend_plot.index]
-                            if valid_order:
-                                trend_plot = trend_plot.loc[valid_order]
-                                fig_trend = go.Figure()
-                                for col in trend_plot.columns:
-                                    fig_trend.add_trace(go.Scatter(x=trend_plot.index, y=trend_plot[col], mode='lines+markers', name=col))
-                                fig_trend.update_layout(title="90天 EPS 預估修正趨勢", plot_bgcolor='white')
-                                st.plotly_chart(fig_trend, use_container_width=True)
+                                    st.caption(f"圖表繪製失敗: {e}")
+
+                        with tab2:
+                            if has_trend_data:
+                                try:
+                                    trend_plot = trend_df.T
+                                    time_order = ['90daysAgo', '60daysAgo', '30daysAgo', '7daysAgo', 'current']
+                                    valid_order = [t for t in time_order if t in trend_plot.index]
+                                    if valid_order:
+                                        trend_plot = trend_plot.loc[valid_order]
+                                        fig_trend = go.Figure()
+                                        for col in trend_plot.columns:
+                                            fig_trend.add_trace(go.Scatter(x=trend_plot.index, y=trend_plot[col], mode='lines+markers', name=col))
+                                        fig_trend.update_layout(title="EPS 預估修正趨勢", plot_bgcolor='white')
+                                        st.plotly_chart(fig_trend, use_container_width=True)
+                                except Exception as e:
+                                    st.caption(f"趨勢圖繪製失敗: {e}")
+            except Exception as e:
+                st.error(f"分析師預估區塊錯誤: {e}")
 
             # --- B. 圖表區域 ---
             st.markdown("### 3. 技術分析圖表")
@@ -797,7 +753,6 @@ def render_stock_strategy_page():
                 st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
                 st.markdown("#### 🛡️ 風險與建議")
                 
-                # 簡單背離邏輯
                 price_high_recent = df['Close'].tail(20).max()
                 rsi_high_recent = df['RSI'].tail(20).max()
                 price_high_prev = df['Close'].iloc[-60:-20].max()
