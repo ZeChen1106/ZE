@@ -1,9 +1,9 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
-# Style: High Contrast Light Theme (Darker Fonts)
+# Style: High Contrast Light Theme (All Text Darkened)
 # Optimization: 
-#   1. Parallel Fetching for Fundamentals (Significant speedup for single stock)
-#   2. Vectorized Calculation for Market Dashboard (Speedup for S&P 500)
+#   1. Parallel Fetching for Fundamentals
+#   2. Vectorized Calculation for Market Dashboard
 #   3. Reduced data fetch period for Macro (1y)
 # Features: Robust Fixes for yfinance MultiIndex retained
 # ----------------------------------------------------------------------
@@ -26,116 +26,135 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS 高對比亮色風格注入 ---
+# --- CSS 全局高對比深色字體注入 ---
 st.markdown("""
 <style>
     /* 引入現代字體 Inter */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
     
-    html, body, [class*="css"]  {
+    /* 1. 全局基礎設定 - 強制深色 */
+    html, body, .stApp {
         font-family: 'Inter', sans-serif;
-        color: #333333; /* 全局字體加深 */
-    }
-
-    /* 背景微調 - 亮色系 */
-    .stApp {
+        color: #111111 !important; /* 接近純黑 */
         background-color: #f8f9fa;
     }
 
-    /* 頂部標題區塊調整 */
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
+    /* 2. 針對所有 Markdown 內文 (段落, 列表, Span) */
+    .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown div {
+        color: #111111 !important;
+        font-weight: 500;
     }
 
-    /* --- Dashboard Card 風格 (亮色卡片) --- */
-    .dashboard-card {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #e5e7eb;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        margin-bottom: 20px;
+    /* 3. 所有標題 (H1-H6) */
+    h1, h2, h3, h4, h5, h6, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+        color: #000000 !important; /* 純黑標題 */
+        font-weight: 800 !important;
+        letter-spacing: -0.5px;
+    }
+    
+    /* 標題裝飾線 */
+    h3 {
+        margin-top: 1rem;
+        border-left: 5px solid #2b7de9;
+        padding-left: 10px;
     }
 
-    /* 強制美化 st.metric 原生元件 (亮色版 - 高對比) */
+    /* 4. 輸入元件標籤 (Widget Labels) */
+    .stTextInput label, .stSelectbox label, .stNumberInput label, .stRadio label {
+        color: #000000 !important;
+        font-weight: 700 !important;
+        font-size: 1rem !important;
+    }
+    
+    /* 5. Expander 標題 */
+    .streamlit-expanderHeader p {
+        color: #000000 !important;
+        font-weight: 700 !important;
+        font-size: 1.1rem !important;
+    }
+
+    /* 6. Tabs 標籤 */
+    .stTabs button {
+        color: #333333 !important;
+        font-weight: 700 !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #2b7de9 !important; /* 選中時為藍色 */
+    }
+
+    /* 7. Metric 指標元件優化 (亮色卡片) */
     [data-testid="stMetric"] {
         background-color: #ffffff;
-        border: 1px solid #e0e0e0;
+        border: 1px solid #d1d5db; /* 加深邊框 */
         padding: 15px 20px;
         border-radius: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.08); /* 加深陰影 */
         transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
     
     [data-testid="stMetric"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        box-shadow: 0 5px 15px rgba(0,0,0,0.15);
         border-color: #2b7de9;
     }
 
     [data-testid="stMetricLabel"] {
-        font-size: 14px;
-        color: #444444; /* 標籤字體加深 (深灰) */
-        font-weight: 600;
+        font-size: 15px !important;
+        color: #444444 !important; /* 標籤深灰 */
+        font-weight: 700 !important;
     }
 
     [data-testid="stMetricValue"] {
-        font-size: 26px;
-        color: #000000; /* 數值字體全黑 */
-        font-weight: 700;
-    }
-
-    /* 標題樣式 */
-    h1, h2, h3 {
-        color: #000000; /* 標題全黑 */
-        font-weight: 700;
-        letter-spacing: -0.5px;
+        font-size: 28px !important;
+        color: #000000 !important; /* 數值純黑 */
+        font-weight: 800 !important;
     }
     
-    h3 {
-        margin-top: 1rem;
-        border-left: 5px solid #2b7de9;
-        padding-left: 10px;
-        font-size: 1.25rem;
-    }
-
-    /* 側邊欄樣式優化 */
+    /* 8. 側邊欄全域深色 */
     [data-testid="stSidebar"] {
         background-color: #ffffff;
         border-right: 1px solid #e5e7eb;
     }
-    
-    /* 側邊欄文字加深 */
     [data-testid="stSidebar"] * {
-        color: #333333;
+        color: #111111 !important;
+    }
+    [data-testid="stSidebar"] .stRadio label {
+        font-weight: 600 !important;
+    }
+
+    /* 9. Caption 輔助文字 (不要太淡) */
+    .stCaption {
+        color: #555555 !important;
+        font-size: 0.9rem !important;
+    }
+
+    /* 自定義 Dashboard Card 容器 */
+    .dashboard-card {
+        background-color: #ffffff;
+        padding: 25px;
+        border-radius: 12px;
+        border: 1px solid #d1d5db;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        margin-bottom: 25px;
     }
 
     /* 按鈕樣式 */
     .stButton button {
         border-radius: 8px;
-        font-weight: 600;
+        font-weight: 700;
+        color: #ffffff !important; /* 按鈕文字維持白色 */
     }
 
-    /* 連結按鈕 */
-    .stLinkButton a {
-        background-color: #f3f4f6;
-        color: #111827; /* 連結按鈕文字加深 */
-        border: 1px solid #d1d5db;
-        border-radius: 6px;
-        padding: 5px 10px;
-        font-size: 0.9em;
-        text-decoration: none;
-        transition: all 0.2s;
+    /* 狀態顏色文字 (加深) */
+    .bullish { color: #059669 !important; font-weight: 800; } /* 深綠 */
+    .bearish { color: #DC2626 !important; font-weight: 800; } /* 深紅 */
+    .neutral { color: #D97706 !important; font-weight: 800; } /* 深橘 */
+    
+    /* 頂部調整 */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
     }
-    .stLinkButton a:hover {
-        background-color: #e5e7eb;
-        color: #000000;
-    }
-
-    .bullish { color: #10b981; font-weight: bold; }
-    .bearish { color: #ef4444; font-weight: bold; }
-    .neutral { color: #f59e0b; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
