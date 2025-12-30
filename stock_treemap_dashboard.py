@@ -1,7 +1,7 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # UI Style Reference: Modern Streamlit Dashboard
-# Fixed: Robust Error Handling for Fundamentals & Estimates Rendering
+# Fixed: AAPL validity check regression & Data processing robustness
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -44,7 +44,6 @@ st.markdown("""
     }
 
     /* --- Dashboard Card 風格 --- */
-    /* 這是我們用來包覆內容的白色卡片容器 */
     .dashboard-card {
         background-color: #ffffff;
         padding: 20px;
@@ -54,7 +53,7 @@ st.markdown("""
         margin-bottom: 20px;
     }
 
-    /* 強制美化 st.metric 原生元件，使其看起來像小卡片 */
+    /* 強制美化 st.metric */
     [data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e0e0e0;
@@ -124,11 +123,9 @@ st.markdown("""
         color: #111827;
     }
 
-    /* 狀態顏色文字 */
     .bullish { color: #10b981; font-weight: bold; }
     .bearish { color: #ef4444; font-weight: bold; }
     .neutral { color: #f59e0b; font-weight: bold; }
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -157,7 +154,6 @@ with st.sidebar:
     if 'last_update' in st.session_state:
         st.caption(f"Last Update: {st.session_state['last_update']}")
 
-# 標題區塊
 st.title(f"📊 {market_mode}")
 st.markdown("---")
 
@@ -196,11 +192,9 @@ def get_sp500_constituents():
         df = pd.read_csv(url)
         rename_map = {'Symbol': 'Ticker', 'GICS Sector': 'Sector', 'GICS Sub-Industry': 'Industry'}
         df = df.rename(columns=rename_map)
-        
         df['Ticker'] = df['Ticker'].str.replace('.', '-', regex=False)
         if 'Industry' not in df.columns:
             df['Industry'] = df['Sector'] if 'Sector' in df.columns else 'Unknown'
-            
         return df
     except Exception:
         return pd.DataFrame()
@@ -244,29 +238,53 @@ def get_commodity_data():
 
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, period="2y"):
-    """獲取單一股票的詳細數據 (Robust Fix for KeyError)"""
+    """
+    獲取單一股票的詳細數據
+    修復重點：增加對 'Adj Close' 的支援，以及更寬容的欄位檢測
+    """
     try:
+        # 下載數據，不預設 index 結構
         data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
         
+        if data.empty:
+            return pd.DataFrame()
+
+        # 1. 處理 MultiIndex (如果有的話)
         if isinstance(data.columns, pd.MultiIndex):
+            # 優先尋找 'Close'
             target_level = None
+            found = False
             for i in range(data.columns.nlevels):
                 if 'Close' in data.columns.get_level_values(i):
                     target_level = i
+                    found = True
                     break
             
-            if target_level is not None:
+            if found:
                 data.columns = data.columns.get_level_values(target_level)
             else:
-                if not data.empty:
-                    data.columns = data.columns.droplevel(0)
-        
-        if not data.empty and 'Close' in data.columns:
+                # 嘗試尋找 'Adj Close'
+                for i in range(data.columns.nlevels):
+                    if 'Adj Close' in data.columns.get_level_values(i):
+                        target_level = i
+                        data.columns = data.columns.get_level_values(target_level)
+                        break
+                # 如果還是沒找到，且只有一層多餘的 (e.g. Ticker)，就直接 drop
+                if not found and data.columns.nlevels > 1:
+                     data.columns = data.columns.droplevel(0)
+
+        # 2. 欄位標準化 ('Adj Close' -> 'Close')
+        if 'Adj Close' in data.columns and 'Close' not in data.columns:
+            data.rename(columns={'Adj Close': 'Close'}, inplace=True)
+
+        # 3. 最終檢查與清除空值
+        if 'Close' in data.columns:
             data = data.dropna(subset=['Close'])
+            return data
         else:
+            # 如果還是沒有 Close 欄位，回傳空
             return pd.DataFrame()
 
-        return data
     except Exception as e:
         print(f"Error fetching {ticker}: {e}")
         return pd.DataFrame()
@@ -275,81 +293,90 @@ def get_stock_data(ticker, period="2y"):
 def get_fundamentals(ticker):
     """
     嘗試獲取基本面數據
-    注意：使用 try-except 防止因 yfinance 錯誤導致程式崩潰
+    修復重點：確保回傳的字典永遠包含所有必要的 keys，避免 KeyError
     """
+    # 預設空值結構
+    result = {
+        'P/FCF': None, 'FCF': None, 'MarketCap': None,
+        'GrossMargin': None, 'OperatingMargin': None,
+        'EarningsGrowth': None, 'ContractLiabilities': None,
+        'TrailingPE': None, 'PEG': None, 'ForwardEPS': None,
+        'EarningsEst': None, 'EPSTrend': None
+    }
+    
     try:
         stock = yf.Ticker(ticker)
-        info = stock.info
+        # info 屬性可能會因為連線問題卡住或失敗，需小心
+        try:
+            info = stock.info
+        except:
+            info = {}
         
+        # 填入直接從 info 獲取的數據
+        result['MarketCap'] = info.get('marketCap')
+        result['GrossMargin'] = info.get('grossMargins')
+        result['OperatingMargin'] = info.get('operatingMargins')
+        result['EarningsGrowth'] = info.get('earningsGrowth')
+        result['TrailingPE'] = info.get('trailingPE')
+        result['PEG'] = info.get('pegRatio')
+        result['ForwardEPS'] = info.get('forwardEps')
+
         # 1. FCF 計算
-        fcf = info.get('freeCashflow', None)
+        fcf = info.get('freeCashflow')
         if fcf is None:
             try:
                 cf = stock.cashflow
                 if not cf.empty:
                     op_cf = None
                     capex = None
-                    for col in ['Operating Cash Flow', 'Total Cash From Operating Activities']:
-                        if col in cf.index:
-                            op_cf = cf.loc[col].iloc[0]
-                            break
-                    for col in ['Capital Expenditure', 'Capital Expenditures']:
-                        if col in cf.index:
-                            capex = cf.loc[col].iloc[0]
-                            break
+                    # 寬容匹配欄位名稱
+                    for idx in cf.index:
+                        idx_lower = str(idx).lower()
+                        if 'operating' in idx_lower and 'cash' in idx_lower:
+                            op_cf = cf.loc[idx].iloc[0]
+                        if 'capital' in idx_lower and 'expenditure' in idx_lower:
+                            capex = cf.loc[idx].iloc[0]
+                    
                     if op_cf is not None and capex is not None:
                         fcf = op_cf + capex 
             except:
                 pass
+        result['FCF'] = fcf
 
         # 2. P/FCF
-        market_cap = info.get('marketCap', None)
-        p_fcf = None
-        if fcf and market_cap and fcf > 0:
-            p_fcf = market_cap / fcf
+        if fcf and result['MarketCap'] and fcf > 0:
+            result['P/FCF'] = result['MarketCap'] / fcf
 
         # 3. 合約負債
-        contract_liabilities = None
         try:
             bs = stock.balance_sheet
             for col in ['Contract Liabilities', 'Deferred Revenue', 'Current Deferred Revenue']:
                 if col in bs.index:
-                    contract_liabilities = bs.loc[col].iloc[0]
+                    result['ContractLiabilities'] = bs.loc[col].iloc[0]
                     break
         except:
             pass
 
-        # 4. 分析師預估數據 (獨立 try-catch，因為容易出錯)
-        earnings_est = None
-        eps_trend = None
+        # 4. 分析師預估
         try:
-            earnings_est = stock.earnings_estimate
-            eps_trend = stock.eps_trend
+            result['EarningsEst'] = stock.earnings_estimate
+            result['EPSTrend'] = stock.eps_trend
         except:
             pass
 
-        return {
-            'P/FCF': p_fcf,
-            'FCF': fcf,
-            'MarketCap': market_cap,
-            'GrossMargin': info.get('grossMargins', None),
-            'OperatingMargin': info.get('operatingMargins', None),
-            'EarningsGrowth': info.get('earningsGrowth', None),
-            'ContractLiabilities': contract_liabilities,
-            'TrailingPE': info.get('trailingPE', None),
-            'PEG': info.get('pegRatio', None),
-            'ForwardEPS': info.get('forwardEps', None),
-            'EarningsEst': earnings_est,
-            'EPSTrend': eps_trend
-        }
     except Exception as e:
-        print(f"Fundamentals error for {ticker}: {e}")
-        # 返回空字典而非崩潰，頁面會顯示 N/A
-        return {}
+        print(f"Fundamentals critical error for {ticker}: {e}")
+    
+    return result
 
 def check_ticker_validity(ticker):
+    """
+    檢查代號是否有效
+    修復重點：改回使用最原始的 yf.download 檢查，不依賴 get_stock_data 的複雜邏輯，確保 AAPL 能通過
+    """
     try:
-        data = get_stock_data(ticker, period="5d")
+        # 只抓一天，快速檢查是否有回傳資料
+        data = yf.download(ticker, period="1d", progress=False)
         return not data.empty
     except:
         return False
@@ -554,6 +581,7 @@ def render_stock_strategy_page():
             ticker = f"{ticker}.TW"
             st.caption(f"💡 偵測到數字代號，將以台股上市模式查詢：{ticker}")
 
+        # 使用修正後的 check_ticker_validity
         with st.spinner(f"正在連線交易所查詢 {ticker} ..."):
             is_valid = check_ticker_validity(ticker)
             if not is_valid and ticker.endswith('.TW'):
@@ -569,7 +597,7 @@ def render_stock_strategy_page():
 
         with st.spinner(f"✅ 代號確認！正在計算 {ticker} 技術指標與基本面..."):
             df = get_stock_data(ticker, period=timeframe)
-            fund_data = get_fundamentals(ticker) # 安全獲取，出錯回傳 {}
+            fund_data = get_fundamentals(ticker) 
 
             if df.empty or len(df) < 50:
                 st.warning("⚠️ 數據不足，無法進行完整技術分析。")
@@ -608,8 +636,7 @@ def render_stock_strategy_page():
 
             st.write("")
 
-            # --- 基本面快照區塊 ---
-            # 使用 try-except 包覆，避免單一數值錯誤導致整個區塊消失
+            # --- 基本面快照區塊 (Robust Rendering) ---
             try:
                 st.markdown("### 2. 基本面體質快照 (Fundamental Snapshot)")
                 f1, f2, f3, f4 = st.columns(4)
@@ -656,8 +683,7 @@ def render_stock_strategy_page():
             except Exception as e:
                 st.error(f"基本面數據渲染錯誤: {e}")
 
-            # --- 3. 分析師 EPS 預估 ---
-            # 使用 try-except 包覆圖表繪製
+            # --- 3. 分析師 EPS 預估 (Robust Charting) ---
             try:
                 est_df = fund_data.get('EarningsEst')
                 trend_df = fund_data.get('EPSTrend')
@@ -672,11 +698,9 @@ def render_stock_strategy_page():
                         with tab1:
                             if has_est_data:
                                 try:
-                                    # Copy data to avoid mutation issues
                                     plot_data = est_df.copy()
                                     plot_data.index = plot_data.index.astype(str).str.lower()
                                     
-                                    # Fuzzy match indices
                                     idx_map = {}
                                     for idx in plot_data.index:
                                         if 'avg' in idx: idx_map['avg'] = idx
