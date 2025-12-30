@@ -4,7 +4,8 @@
 # Features: 
 #   1. Robust Fix for S&P 500 & TWSE MultiIndex issues (Ticker/Price swap)
 #   2. Fix for Single Ticker Data (getting Close column)
-#   3. Fallbacks for Analyst Estimates
+#   3. ENHANCED: Deep scraping for Fundamentals (Calculated metrics fallback)
+#   4. ENHANCED: Analyst Recommendations Summary (Strong Buy/Hold chart)
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -307,19 +308,26 @@ def get_stock_data(ticker, period="2y"):
 def get_fundamentals(ticker):
     """
     嘗試獲取基本面數據
+    修復重點：
+    1. 增強欄位獲取失敗時的備援 (例如 Forward EPS 可由股價/Forward PE 計算)
+    2. 新增抓取 recommendations_summary (評級分佈) 作為 Estimates 抓不到時的替代方案
     """
     result = {
         'P/FCF': None, 'FCF': None, 'MarketCap': None,
         'GrossMargin': None, 'OperatingMargin': None,
         'EarningsGrowth': None, 'ContractLiabilities': None,
-        'TrailingPE': None, 'PEG': None, 'ForwardEPS': None,
+        'TrailingPE': None, 'ForwardPE': None, # Added ForwardPE
+        'PEG': None, 'ForwardEPS': None,
         'EarningsEst': None, 'EPSTrend': None,
         'TargetMean': None, 'TargetHigh': None, 'TargetLow': None,
-        'Recommendation': None, 'NumAnalysts': None
+        'Recommendation': None, 'NumAnalysts': None,
+        'RecSummary': None # Added Recommendation Summary
     }
     
     try:
         stock = yf.Ticker(ticker)
+        
+        # --- A. 獲取基本 Info (最快) ---
         try:
             info = stock.info
         except:
@@ -330,28 +338,50 @@ def get_fundamentals(ticker):
         result['OperatingMargin'] = info.get('operatingMargins')
         result['EarningsGrowth'] = info.get('earningsGrowth')
         result['TrailingPE'] = info.get('trailingPE')
+        result['ForwardPE'] = info.get('forwardPE') # Get Forward PE for calculation
         result['PEG'] = info.get('pegRatio')
         result['ForwardEPS'] = info.get('forwardEps')
         
+        # 1. 嘗試補救 Forward EPS
+        if result['ForwardEPS'] is None and result['ForwardPE'] and info.get('currentPrice'):
+             # EPS = Price / PE
+             result['ForwardEPS'] = info.get('currentPrice') / result['ForwardPE']
+
+        # 2. 嘗試補救 PEG
+        if result['PEG'] is None and result['TrailingPE'] and result['EarningsGrowth']:
+             # 簡單估算: PEG = PE / (Growth * 100)
+             if result['EarningsGrowth'] > 0:
+                result['PEG'] = result['TrailingPE'] / (result['EarningsGrowth'] * 100)
+
+        # 分析師數據 (Info 來源)
         result['TargetMean'] = info.get('targetMeanPrice')
         result['TargetHigh'] = info.get('targetHighPrice')
         result['TargetLow'] = info.get('targetLowPrice')
         result['Recommendation'] = info.get('recommendationKey')
         result['NumAnalysts'] = info.get('numberOfAnalystOpinions')
 
+        # --- B. 獲取現金流 (較慢，需解析) ---
         fcf = info.get('freeCashflow')
         if fcf is None:
             try:
                 cf = stock.cashflow
                 if not cf.empty:
+                    # 取最近一期 (通常是第一欄)
+                    recent_cf = cf.iloc[:, 0]
+                    
                     op_cf = None
                     capex = None
-                    for idx in cf.index:
-                        idx_lower = str(idx).lower()
-                        if 'operating' in idx_lower and 'cash' in idx_lower:
-                            op_cf = cf.loc[idx].iloc[0]
-                        if 'capital' in idx_lower and 'expenditure' in idx_lower:
-                            capex = cf.loc[idx].iloc[0]
+                    
+                    # 模糊搜尋 Index
+                    for idx in recent_cf.index:
+                        idx_str = str(idx).lower()
+                        # 找營運現金流
+                        if ('operating' in idx_str and 'cash' in idx_str) or 'total cash from operating activities' in idx_str:
+                            op_cf = recent_cf[idx]
+                        
+                        # 找資本支出 (通常是負數)
+                        if 'capital' in idx_str and 'expenditure' in idx_str:
+                            capex = recent_cf[idx]
                     
                     if op_cf is not None and capex is not None:
                         fcf = op_cf + capex 
@@ -362,18 +392,28 @@ def get_fundamentals(ticker):
         if fcf and result['MarketCap'] and fcf > 0:
             result['P/FCF'] = result['MarketCap'] / fcf
 
+        # --- C. 獲取合約負債 (資產負債表) ---
         try:
             bs = stock.balance_sheet
-            for col in ['Contract Liabilities', 'Deferred Revenue', 'Current Deferred Revenue']:
-                if col in bs.index:
-                    result['ContractLiabilities'] = bs.loc[col].iloc[0]
-                    break
+            if not bs.empty:
+                # 模糊搜尋
+                for idx in bs.index:
+                    idx_str = str(idx).lower()
+                    if 'contract' in idx_str and 'liabilities' in idx_str:
+                        result['ContractLiabilities'] = bs.loc[idx].iloc[0]
+                        break
+                    if 'deferred' in idx_str and 'revenue' in idx_str:
+                        result['ContractLiabilities'] = bs.loc[idx].iloc[0]
+                        break
         except:
             pass
 
+        # --- D. 獲取分析師詳細預估 (最容易失敗，放最後) ---
         try:
             result['EarningsEst'] = stock.earnings_estimate
             result['EPSTrend'] = stock.eps_trend
+            # [新增] 獲取評級分佈 (Strong Buy, Buy, etc.)
+            result['RecSummary'] = stock.recommendations_summary
         except:
             pass
 
@@ -685,6 +725,7 @@ def render_stock_strategy_page():
 
                 peg = fund_data.get('PEG')
                 peg_est = False
+                # 如果沒有官方 PEG，嘗試手動計算
                 if peg is None:
                     pe_val = fund_data.get('TrailingPE')
                     growth = fund_data.get('EarningsGrowth')
@@ -723,22 +764,32 @@ def render_stock_strategy_page():
             try:
                 est_df = fund_data.get('EarningsEst')
                 trend_df = fund_data.get('EPSTrend')
+                rec_summary = fund_data.get('RecSummary') # 評級分佈 DataFrame
+                
                 has_est_data = est_df is not None and not est_df.empty
                 has_trend_data = trend_df is not None and not trend_df.empty
+                has_rec_data = rec_summary is not None and not rec_summary.empty
                 
                 target_mean = fund_data.get('TargetMean')
                 recommendation = fund_data.get('Recommendation')
                 
                 with st.expander("📊 點擊展開：分析師看法 (Analyst Estimates & Consensus)", expanded=True):
                     
-                    if has_est_data or has_trend_data:
-                        tab1, tab2 = st.tabs(["未來預估 (Estimates)", "修正趨勢 (Revisions)"])
-                        with tab1:
-                            if has_est_data:
+                    # Tab 結構：如果有資料才顯示對應 Tab
+                    tabs = []
+                    if has_est_data: tabs.append("未來預估")
+                    if has_trend_data: tabs.append("修正趨勢")
+                    if has_rec_data: tabs.append("評級分佈")
+                    
+                    if tabs:
+                        tab_objs = st.tabs(tabs)
+                        
+                        # 1. 未來預估
+                        if has_est_data:
+                            with tab_objs[tabs.index("未來預估")]:
                                 try:
                                     plot_data = est_df.copy()
                                     plot_data.index = plot_data.index.astype(str).str.lower()
-                                    
                                     idx_map = {}
                                     for idx in plot_data.index:
                                         if 'avg' in idx: idx_map['avg'] = idx
@@ -751,14 +802,11 @@ def render_stock_strategy_page():
                                         rows = [idx_map['avg']]
                                         if 'low' in idx_map: rows.append(idx_map['low'])
                                         if 'high' in idx_map: rows.append(idx_map['high'])
-                                        
                                         plot_df = plot_data.loc[rows, target_cols].T.reset_index()
-                                        
                                         rename_map = {'index': 'Period', idx_map['avg']: 'Average'}
                                         if 'low' in idx_map: rename_map[idx_map['low']] = 'Low'
                                         if 'high' in idx_map: rename_map[idx_map['high']] = 'High'
                                         plot_df = plot_df.rename(columns=rename_map)
-                                        
                                         if 'Low' not in plot_df.columns: plot_df['Low'] = plot_df['Average']
                                         if 'High' not in plot_df.columns: plot_df['High'] = plot_df['Average']
                                         
@@ -767,12 +815,12 @@ def render_stock_strategy_page():
                                         fig_est.update_layout(plot_bgcolor='white')
                                         st.plotly_chart(fig_est, use_container_width=True)
                                     else:
-                                        st.info("無可用季度數據，請參考下方目標價。")
-                                except Exception as e:
-                                    st.caption(f"圖表繪製失敗: {e}")
+                                        st.info("無季度數據")
+                                except: st.info("繪圖失敗")
 
-                        with tab2:
-                            if has_trend_data:
+                        # 2. 修正趨勢
+                        if has_trend_data:
+                            with tab_objs[tabs.index("修正趨勢")]:
                                 try:
                                     trend_plot = trend_df.T
                                     time_order = ['90daysAgo', '60daysAgo', '30daysAgo', '7daysAgo', 'current']
@@ -784,18 +832,40 @@ def render_stock_strategy_page():
                                             fig_trend.add_trace(go.Scatter(x=trend_plot.index, y=trend_plot[col], mode='lines+markers', name=col))
                                         fig_trend.update_layout(title="EPS 預估修正趨勢", plot_bgcolor='white')
                                         st.plotly_chart(fig_trend, use_container_width=True)
-                                except Exception as e:
-                                    st.caption(f"趨勢圖繪製失敗: {e}")
-                    
+                                except: st.info("繪圖失敗")
+
+                        # 3. 評級分佈 (新增)
+                        if has_rec_data:
+                            with tab_objs[tabs.index("評級分佈")]:
+                                try:
+                                    # rec_summary 通常 columns 是 period, strongBuy, buy, hold, sell, strongSell
+                                    # 我們只取最近一期 (period=0m or similar)
+                                    latest_rec = rec_summary.iloc[0] # Series
+                                    # Filter meaningful keys
+                                    rec_keys = ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']
+                                    rec_vals = [latest_rec.get(k, 0) for k in rec_keys]
+                                    
+                                    fig_rec = px.bar(x=rec_keys, y=rec_vals, title="分析師評級分佈 (Consensus)", 
+                                                     labels={'x': 'Rating', 'y': 'Count'}, color=rec_keys,
+                                                     color_discrete_map={'strongBuy': 'green', 'buy': 'lightgreen', 'hold': 'grey', 'sell': 'pink', 'strongSell': 'red'})
+                                    fig_rec.update_layout(plot_bgcolor='white')
+                                    st.plotly_chart(fig_rec, use_container_width=True)
+                                except: st.info("繪圖失敗")
+
+                    else:
+                        if target_mean is None:
+                            st.info("⚠️ 暫無詳細分析師數據。")
+
+                    # 目標價顯示 (Always show if available)
                     if target_mean is not None:
-                        st.markdown("#### 🎯 分析師目標價與評級 (Consensus & Targets)")
+                        st.markdown("#### 🎯 目標價與評級 (Price Targets)")
                         
                         col_t1, col_t2 = st.columns([1, 2])
                         with col_t1:
                             st.metric("分析師評級", str(recommendation).upper().replace('_', ' ') if recommendation else "N/A")
                             st.metric("平均目標價", f"${target_mean}", delta=f"{((target_mean - last_row['Close'])/last_row['Close']*100):.1f}%" if last_row['Close'] else None)
                             if fund_data.get('NumAnalysts'):
-                                st.caption(f"基於 {fund_data['NumAnalysts']} 位分析師意見")
+                                st.caption(f"基於 {fund_data['NumAnalysts']} 位分析師")
 
                         with col_t2:
                             current_price = last_row['Close']
@@ -803,45 +873,13 @@ def render_stock_strategy_page():
                             high_target = fund_data.get('TargetHigh', current_price * 1.1)
                             
                             fig_target = go.Figure()
-                            fig_target.add_trace(go.Bar(
-                                y=['Price Target'],
-                                x=[low_target],
-                                name='Low',
-                                orientation='h',
-                                marker_color='#ff4b4b'
-                            ))
-                            fig_target.add_trace(go.Bar(
-                                y=['Price Target'],
-                                x=[target_mean - low_target],
-                                name='Mean',
-                                orientation='h',
-                                marker_color='#2b7de9',
-                                base=low_target
-                            ))
-                            fig_target.add_trace(go.Bar(
-                                y=['Price Target'],
-                                x=[high_target - target_mean],
-                                name='High',
-                                orientation='h',
-                                marker_color='#008000',
-                                base=target_mean
-                            ))
-                            
+                            fig_target.add_trace(go.Bar(y=['Price'], x=[low_target], name='Low', orientation='h', marker_color='#ff4b4b'))
+                            fig_target.add_trace(go.Bar(y=['Price'], x=[target_mean - low_target], name='Mean', orientation='h', marker_color='#2b7de9', base=low_target))
+                            fig_target.add_trace(go.Bar(y=['Price'], x=[high_target - target_mean], name='High', orientation='h', marker_color='#008000', base=target_mean))
                             fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="black", annotation_text="Now")
                             
-                            fig_target.update_layout(
-                                barmode='stack', 
-                                title="目標價區間 (Low - Mean - High)",
-                                xaxis_title="Price ($)",
-                                height=200,
-                                margin=dict(l=20, r=20, t=30, b=20),
-                                showlegend=False,
-                                plot_bgcolor='white'
-                            )
+                            fig_target.update_layout(barmode='stack', title="目標價區間", height=200, margin=dict(l=20, r=20, t=30, b=20), showlegend=False, plot_bgcolor='white')
                             st.plotly_chart(fig_target, use_container_width=True)
-                    
-                    elif not (has_est_data or has_trend_data):
-                        st.info("⚠️ 暫無詳細分析師預估數據。這通常發生在小型股或非熱門標的。")
 
             except Exception as e:
                 st.error(f"分析師預估區塊錯誤: {e}")
