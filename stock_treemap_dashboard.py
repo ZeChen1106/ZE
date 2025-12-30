@@ -2,6 +2,7 @@
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # UI Style Reference: Modern Streamlit Dashboard
 # Fixed: AAPL validity check regression & Data processing robustness
+# Feature: Analyst Consensus & Price Targets Fallback
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -294,6 +295,7 @@ def get_fundamentals(ticker):
     """
     嘗試獲取基本面數據
     修復重點：確保回傳的字典永遠包含所有必要的 keys，避免 KeyError
+    新增：嘗試抓取目標價 (Target Price) 與評級，作為 Estimates 的備援
     """
     # 預設空值結構
     result = {
@@ -301,7 +303,9 @@ def get_fundamentals(ticker):
         'GrossMargin': None, 'OperatingMargin': None,
         'EarningsGrowth': None, 'ContractLiabilities': None,
         'TrailingPE': None, 'PEG': None, 'ForwardEPS': None,
-        'EarningsEst': None, 'EPSTrend': None
+        'EarningsEst': None, 'EPSTrend': None,
+        'TargetMean': None, 'TargetHigh': None, 'TargetLow': None,
+        'Recommendation': None, 'NumAnalysts': None
     }
     
     try:
@@ -320,6 +324,13 @@ def get_fundamentals(ticker):
         result['TrailingPE'] = info.get('trailingPE')
         result['PEG'] = info.get('pegRatio')
         result['ForwardEPS'] = info.get('forwardEps')
+        
+        # [新增] 分析師目標價與評級 (較為穩定的來源)
+        result['TargetMean'] = info.get('targetMeanPrice')
+        result['TargetHigh'] = info.get('targetHighPrice')
+        result['TargetLow'] = info.get('targetLowPrice')
+        result['Recommendation'] = info.get('recommendationKey')
+        result['NumAnalysts'] = info.get('numberOfAnalystOpinions')
 
         # 1. FCF 計算
         fcf = info.get('freeCashflow')
@@ -357,7 +368,7 @@ def get_fundamentals(ticker):
         except:
             pass
 
-        # 4. 分析師預估
+        # 4. 分析師預估 (詳細表格，容易失敗)
         try:
             result['EarningsEst'] = stock.earnings_estimate
             result['EPSTrend'] = stock.eps_trend
@@ -683,17 +694,21 @@ def render_stock_strategy_page():
             except Exception as e:
                 st.error(f"基本面數據渲染錯誤: {e}")
 
-            # --- 3. 分析師 EPS 預估 (Robust Charting) ---
+            # --- 3. 分析師 EPS 預估 (Robust Charting & Fallback) ---
             try:
                 est_df = fund_data.get('EarningsEst')
                 trend_df = fund_data.get('EPSTrend')
                 has_est_data = est_df is not None and not est_df.empty
                 has_trend_data = trend_df is not None and not trend_df.empty
-
-                with st.expander("📊 點擊展開：分析師 EPS 預估詳情 (Analyst Estimates)", expanded=True):
-                    if not has_est_data and not has_trend_data:
-                        st.info("⚠️ 查無分析師預估數據 (僅美股主要代號提供完整數據)")
-                    else:
+                
+                # Check for alternative data
+                target_mean = fund_data.get('TargetMean')
+                recommendation = fund_data.get('Recommendation')
+                
+                with st.expander("📊 點擊展開：分析師看法 (Analyst Estimates & Consensus)", expanded=True):
+                    
+                    if has_est_data or has_trend_data:
+                        # 優先顯示詳細預估圖表
                         tab1, tab2 = st.tabs(["未來預估 (Estimates)", "修正趨勢 (Revisions)"])
                         with tab1:
                             if has_est_data:
@@ -729,7 +744,7 @@ def render_stock_strategy_page():
                                         fig_est.update_layout(plot_bgcolor='white')
                                         st.plotly_chart(fig_est, use_container_width=True)
                                     else:
-                                        st.caption("無可用季度/年度預估數據")
+                                        st.info("無可用季度數據，請參考下方目標價。")
                                 except Exception as e:
                                     st.caption(f"圖表繪製失敗: {e}")
 
@@ -748,6 +763,66 @@ def render_stock_strategy_page():
                                         st.plotly_chart(fig_trend, use_container_width=True)
                                 except Exception as e:
                                     st.caption(f"趨勢圖繪製失敗: {e}")
+                    
+                    # Fallback or Additional Info: Price Targets
+                    if target_mean is not None:
+                        st.markdown("#### 🎯 分析師目標價與評級 (Consensus & Targets)")
+                        
+                        col_t1, col_t2 = st.columns([1, 2])
+                        with col_t1:
+                            st.metric("分析師評級", str(recommendation).upper().replace('_', ' ') if recommendation else "N/A")
+                            st.metric("平均目標價", f"${target_mean}", delta=f"{((target_mean - last_row['Close'])/last_row['Close']*100):.1f}%" if last_row['Close'] else None)
+                            if fund_data.get('NumAnalysts'):
+                                st.caption(f"基於 {fund_data['NumAnalysts']} 位分析師意見")
+
+                        with col_t2:
+                            # 繪製簡單的目標價位階圖
+                            current_price = last_row['Close']
+                            low_target = fund_data.get('TargetLow', current_price * 0.9)
+                            high_target = fund_data.get('TargetHigh', current_price * 1.1)
+                            
+                            fig_target = go.Figure()
+                            fig_target.add_trace(go.Bar(
+                                y=['Price Target'],
+                                x=[low_target],
+                                name='Low',
+                                orientation='h',
+                                marker_color='#ff4b4b'
+                            ))
+                            fig_target.add_trace(go.Bar(
+                                y=['Price Target'],
+                                x=[target_mean - low_target],
+                                name='Mean',
+                                orientation='h',
+                                marker_color='#2b7de9',
+                                base=low_target
+                            ))
+                            fig_target.add_trace(go.Bar(
+                                y=['Price Target'],
+                                x=[high_target - target_mean],
+                                name='High',
+                                orientation='h',
+                                marker_color='#008000',
+                                base=target_mean
+                            ))
+                            
+                            # Add Current Price Marker
+                            fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="black", annotation_text="Now")
+                            
+                            fig_target.update_layout(
+                                barmode='stack', 
+                                title="目標價區間 (Low - Mean - High)",
+                                xaxis_title="Price ($)",
+                                height=200,
+                                margin=dict(l=20, r=20, t=30, b=20),
+                                showlegend=False,
+                                plot_bgcolor='white'
+                            )
+                            st.plotly_chart(fig_target, use_container_width=True)
+                    
+                    elif not (has_est_data or has_trend_data):
+                        st.info("⚠️ 暫無詳細分析師預估數據。這通常發生在小型股或非熱門標的。")
+
             except Exception as e:
                 st.error(f"分析師預估區塊錯誤: {e}")
 
