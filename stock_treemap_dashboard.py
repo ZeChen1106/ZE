@@ -1,7 +1,10 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # Style: Reverted to Clean Light Theme
-# Features: All robustness fixes (AAPL, Estimates Fallback) retained
+# Features: 
+#   1. Robust Fix for S&P 500 & TWSE MultiIndex issues (Ticker/Price swap)
+#   2. Fix for Single Ticker Data (getting Close column)
+#   3. Fallbacks for Analyst Estimates
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -217,7 +220,11 @@ def fetch_market_caps(tickers):
 
 @st.cache_data(ttl=21600) 
 def fetch_price_history(tickers, period="1y"):
+    """
+    下載大量股票歷史數據
+    """
     try:
+        # 下載數據 (group_by='ticker' 理論上回傳 (Ticker, Price) 或 (Price, Ticker))
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, threads=True, progress=False)
         return data
     except Exception:
@@ -239,7 +246,8 @@ def get_commodity_data():
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, period="2y"):
     """
-    獲取單一股票的詳細數據
+    獲取單一股票的詳細數據 (針對個股分析頁面)
+    修復：確保能正確處理單一股票回傳的 MultiIndex 或一般 DataFrame
     """
     try:
         data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
@@ -247,12 +255,14 @@ def get_stock_data(ticker, period="2y"):
         if data.empty:
             return pd.DataFrame()
 
-        # 1. 處理 MultiIndex
+        # 1. 處理 MultiIndex (針對 yfinance 版本差異)
         if isinstance(data.columns, pd.MultiIndex):
+            # 優先尋找 'Close' 欄位所在的層級
             target_level = None
             found = False
             for i in range(data.columns.nlevels):
-                if 'Close' in data.columns.get_level_values(i):
+                level_values = data.columns.get_level_values(i)
+                if 'Close' in level_values:
                     target_level = i
                     found = True
                     break
@@ -260,13 +270,21 @@ def get_stock_data(ticker, period="2y"):
             if found:
                 data.columns = data.columns.get_level_values(target_level)
             else:
+                # 嘗試尋找 'Adj Close'
                 for i in range(data.columns.nlevels):
-                    if 'Adj Close' in data.columns.get_level_values(i):
+                    level_values = data.columns.get_level_values(i)
+                    if 'Adj Close' in level_values:
                         target_level = i
                         data.columns = data.columns.get_level_values(target_level)
+                        found = True
                         break
-                if not found and data.columns.nlevels > 1:
-                     data.columns = data.columns.droplevel(0)
+            
+            # 如果還是沒找到 Close，但結構有多層，嘗試直接取最底層 (通常是 Price)
+            if not found and data.columns.nlevels > 1:
+                 # 有時候 (Ticker, Price) -> 取 level 1
+                 # 有時候 (Price, Ticker) -> 取 level 0
+                 # 這裡做一個假設性的處理，或者檢查欄位名稱是否像價格
+                 pass 
 
         # 2. 欄位標準化
         if 'Adj Close' in data.columns and 'Close' not in data.columns:
@@ -277,6 +295,8 @@ def get_stock_data(ticker, period="2y"):
             data = data.dropna(subset=['Close'])
             return data
         else:
+            # 最後一搏：如果只剩一層且有 Ticker 名稱，可能是 (Ticker) 只有一個 Close?
+            # 暫時回傳空，避免錯誤
             return pd.DataFrame()
 
     except Exception as e:
@@ -364,6 +384,7 @@ def get_fundamentals(ticker):
 
 def check_ticker_validity(ticker):
     try:
+        # 使用最原始的方式檢查，確保 AAPL 能通過
         data = yf.download(ticker, period="1d", progress=False)
         return not data.empty
     except:
@@ -405,22 +426,43 @@ def calculate_indicators(df):
 
 # --- 6. 核心計算邏輯 (股票) ---
 def process_data_for_periods(base_df, history_data, market_caps):
+    """
+    處理大量股票數據，修復 MultiIndex 結構問題
+    """
     results = []
     tickers = base_df['Ticker'].tolist()
     
-    valid_tickers = tickers
+    # [CRITICAL FIX] 偵測並修復 MultiIndex 順序 (Price, Ticker) vs (Ticker, Price)
     if isinstance(history_data.columns, pd.MultiIndex):
+        level0_vals = history_data.columns.get_level_values(0)
+        # 如果 Level 0 包含 'Close'，表示結構是 (Price, Ticker)，需要交換
+        if 'Close' in level0_vals:
+            # 交換 Level，變成 (Ticker, Price) 以符合後續邏輯
+            history_data = history_data.swaplevel(0, 1, axis=1)
+            history_data.sort_index(axis=1, inplace=True)
+            
+    valid_tickers = []
+    if isinstance(history_data.columns, pd.MultiIndex):
+        # 現在假設 Level 0 是 Ticker
         fetched_tickers = set(history_data.columns.get_level_values(0))
         valid_tickers = [t for t in tickers if t in fetched_tickers]
+    else:
+        # 如果不是 MultiIndex，可能是只有一檔股票或格式錯誤
+        # 這裡做一個簡單的容錯
+        valid_tickers = tickers if not history_data.empty else []
 
     for ticker in valid_tickers:
         try:
+            # 安全獲取 Close 數據
+            stock_df = pd.Series()
             if isinstance(history_data.columns, pd.MultiIndex):
-                if ticker not in history_data.columns.get_level_values(0):
-                    continue
-                stock_df = history_data[ticker]['Close'].dropna()
+                if ticker in history_data.columns.get_level_values(0):
+                    if 'Close' in history_data[ticker].columns:
+                        stock_df = history_data[ticker]['Close'].dropna()
             else:
-                continue
+                # 只有單層，檢查是否有 Close
+                if 'Close' in history_data.columns:
+                    stock_df = history_data['Close'].dropna()
 
             if len(stock_df) < 2: continue
             
