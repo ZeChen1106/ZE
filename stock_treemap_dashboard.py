@@ -1,6 +1,6 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
-# Style: Reverted to Clean Light Theme
+# Style: High Contrast Light Theme (Darker Fonts)
 # Optimization: 
 #   1. Parallel Fetching for Fundamentals (Significant speedup for single stock)
 #   2. Vectorized Calculation for Market Dashboard (Speedup for S&P 500)
@@ -26,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS 亮色簡潔風格注入 ---
+# --- CSS 高對比亮色風格注入 ---
 st.markdown("""
 <style>
     /* 引入現代字體 Inter */
@@ -34,6 +34,7 @@ st.markdown("""
     
     html, body, [class*="css"]  {
         font-family: 'Inter', sans-serif;
+        color: #333333; /* 全局字體加深 */
     }
 
     /* 背景微調 - 亮色系 */
@@ -57,7 +58,7 @@ st.markdown("""
         margin-bottom: 20px;
     }
 
-    /* 強制美化 st.metric 原生元件 (亮色版) */
+    /* 強制美化 st.metric 原生元件 (亮色版 - 高對比) */
     [data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e0e0e0;
@@ -75,19 +76,19 @@ st.markdown("""
 
     [data-testid="stMetricLabel"] {
         font-size: 14px;
-        color: #666;
+        color: #444444; /* 標籤字體加深 (深灰) */
         font-weight: 600;
     }
 
     [data-testid="stMetricValue"] {
         font-size: 26px;
-        color: #1f2937;
+        color: #000000; /* 數值字體全黑 */
         font-weight: 700;
     }
 
     /* 標題樣式 */
     h1, h2, h3 {
-        color: #111827;
+        color: #000000; /* 標題全黑 */
         font-weight: 700;
         letter-spacing: -0.5px;
     }
@@ -104,6 +105,11 @@ st.markdown("""
         background-color: #ffffff;
         border-right: 1px solid #e5e7eb;
     }
+    
+    /* 側邊欄文字加深 */
+    [data-testid="stSidebar"] * {
+        color: #333333;
+    }
 
     /* 按鈕樣式 */
     .stButton button {
@@ -114,7 +120,7 @@ st.markdown("""
     /* 連結按鈕 */
     .stLinkButton a {
         background-color: #f3f4f6;
-        color: #374151;
+        color: #111827; /* 連結按鈕文字加深 */
         border: 1px solid #d1d5db;
         border-radius: 6px;
         padding: 5px 10px;
@@ -124,7 +130,7 @@ st.markdown("""
     }
     .stLinkButton a:hover {
         background-color: #e5e7eb;
-        color: #111827;
+        color: #000000;
     }
 
     .bullish { color: #10b981; font-weight: bold; }
