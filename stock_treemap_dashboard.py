@@ -1,6 +1,7 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
 # UI Style Reference: Modern Streamlit Dashboard
+# Fixed: KeyError handling for yfinance MultiIndex & Robust Data Processing
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -194,12 +195,21 @@ def get_sp500_constituents():
     url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
     try:
         df = pd.read_csv(url)
-        df = df.rename(columns={'Symbol': 'Ticker', 'GICS Sector': 'Sector'})
+        # Rename columns to standard format, handling potential variations
+        rename_map = {'Symbol': 'Ticker', 'GICS Sector': 'Sector', 'GICS Sub-Industry': 'Industry'}
+        df = df.rename(columns=rename_map)
+        
+        # Fallback if 'GICS Sector' was missing but 'Sector' exists in raw data
+        if 'Sector' not in df.columns and 'GICS Sector' not in df.columns:
+             # Just in case the CSV structure changed significantly
+             pass 
+
         df['Ticker'] = df['Ticker'].str.replace('.', '-', regex=False)
-        if 'GICS Sub-Industry' in df.columns:
-            df = df.rename(columns={'GICS Sub-Industry': 'Industry'})
-        else:
-            df['Industry'] = df['Sector']
+        
+        # Ensure 'Industry' exists
+        if 'Industry' not in df.columns:
+            df['Industry'] = df['Sector'] if 'Sector' in df.columns else 'Unknown'
+            
         return df
     except Exception:
         return pd.DataFrame()
@@ -223,6 +233,7 @@ def fetch_market_caps(tickers):
 @st.cache_data(ttl=21600) 
 def fetch_price_history(tickers, period="1y"):
     try:
+        # group_by='ticker' returns MultiIndex (Ticker, Price)
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, threads=True, progress=False)
         return data
     except Exception:
@@ -243,22 +254,35 @@ def get_commodity_data():
 
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, period="2y"):
-    """獲取單一股票的詳細數據"""
+    """獲取單一股票的詳細數據 (Robust Fix for KeyError)"""
     try:
         data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
         
-        # 1. 處理 MultiIndex (針對 yfinance 新版行為)
+        # [Critical Fix] Robust MultiIndex Flattening
+        # 掃描所有 Levels，找到包含 'Close' 的那一層，並設為 Columns
         if isinstance(data.columns, pd.MultiIndex):
-            # 如果第一層包含 'Close'，通常結構是 (Price, Ticker)，取第一層
-            if 'Close' in data.columns.get_level_values(0):
-                data.columns = data.columns.get_level_values(0)
-            # 如果第二層包含 'Close'，通常結構是 (Ticker, Price) - 較少見但以防萬一
-            elif data.columns.nlevels > 1 and 'Close' in data.columns.get_level_values(1):
-                data.columns = data.columns.get_level_values(1)
-
-        # 2. 清除空值列 (關鍵修復：避免抓到當日尚未開盤的空資料)
+            target_level = None
+            for i in range(data.columns.nlevels):
+                if 'Close' in data.columns.get_level_values(i):
+                    target_level = i
+                    break
+            
+            if target_level is not None:
+                data.columns = data.columns.get_level_values(target_level)
+            else:
+                # 若找不到 Close，可能是資料全空或結構極度異常
+                if not data.empty:
+                    # 嘗試降維 (Droplevel)
+                    data.columns = data.columns.droplevel(0)
+        
+        # 再次確認 'Close' 是否存在，避免 KeyError
         if not data.empty and 'Close' in data.columns:
             data = data.dropna(subset=['Close'])
+        else:
+            if not data.empty:
+                print(f"Warning: 'Close' column missing for {ticker} even after flattening.")
+            # 若無 Close 欄位，視為無效資料
+            return pd.DataFrame()
 
         return data
     except Exception as e:
@@ -353,15 +377,8 @@ def get_fundamentals(ticker):
 def check_ticker_validity(ticker):
     """檢查代號是否有效 (嘗試抓取 5 天數據)"""
     try:
-        data = yf.download(ticker, period="5d", progress=False)
-        # 同樣清除空值，避免誤判
-        if isinstance(data.columns, pd.MultiIndex):
-             if 'Close' in data.columns.get_level_values(0):
-                data.columns = data.columns.get_level_values(0)
-        
-        if not data.empty and 'Close' in data.columns:
-             data = data.dropna(subset=['Close'])
-             
+        # 使用 get_stock_data 的強固邏輯來檢查
+        data = get_stock_data(ticker, period="5d")
         return not data.empty
     except:
         return False
@@ -410,11 +427,30 @@ def calculate_indicators(df):
 def process_data_for_periods(base_df, history_data, market_caps):
     results = []
     tickers = base_df['Ticker'].tolist()
-    valid_tickers = [t for t in tickers if t in history_data.columns.levels[0]]
     
+    # [Robust check] Handle if history_data has MultiIndex columns (Ticker, Price) or flat
+    valid_tickers = []
+    if isinstance(history_data.columns, pd.MultiIndex):
+        # Assume Level 0 is Ticker because group_by='ticker'
+        # Get unique level 0 values efficiently
+        fetched_tickers = set(history_data.columns.get_level_values(0))
+        valid_tickers = [t for t in tickers if t in fetched_tickers]
+    else:
+        # Fallback for unexpected flat structure (e.g. single ticker result)
+        valid_tickers = tickers
+
     for ticker in valid_tickers:
         try:
-            stock_df = history_data[ticker]['Close'].dropna()
+            # Safe access to DataFrame
+            if isinstance(history_data.columns, pd.MultiIndex):
+                if ticker not in history_data.columns.get_level_values(0):
+                    continue
+                stock_df = history_data[ticker]['Close'].dropna()
+            else:
+                # If flat, maybe column name is 'Close'? But this loop iterates tickers.
+                # If flattened, we might not have ticker info easily. Skip for safety.
+                continue
+
             if len(stock_df) < 2: continue
             
             last_price = stock_df.iloc[-1]
@@ -425,13 +461,27 @@ def process_data_for_periods(base_df, history_data, market_caps):
             chg_1m = stock_df.pct_change(21).iloc[-1] * 100 if len(stock_df) > 21 else 0
             chg_ytd = ((last_price - stock_df.iloc[0]) / stock_df.iloc[0]) * 100
             
-            row = base_df[base_df['Ticker'] == ticker].iloc[0]
+            # Safe row access
+            row_slice = base_df[base_df['Ticker'] == ticker]
+            if row_slice.empty: continue
+            row = row_slice.iloc[0]
+            
             results.append({
-                'Ticker': ticker, 'Name': row.get('Name', ticker), 'Sector': row['Sector'],
-                'Industry': row['Industry'], 'Market Cap': mkt_cap, 'Close': last_price,
-                '1D Change': chg_1d, '1W Change': chg_1w, '1M Change': chg_1m, 'YTD Change': chg_ytd
+                'Ticker': ticker, 
+                'Name': row.get('Name', ticker), 
+                'Sector': row.get('Sector', 'Unknown'), # Safe get
+                'Industry': row.get('Industry', 'Unknown'), 
+                'Market Cap': mkt_cap, 
+                'Close': last_price,
+                '1D Change': chg_1d, 
+                '1W Change': chg_1w, 
+                '1M Change': chg_1m, 
+                'YTD Change': chg_ytd
             })
-        except: continue
+        except Exception as e: 
+            # Skip problematic ticker without crashing app
+            continue
+            
     return pd.DataFrame(results)
 
 # --- 7. 繪圖函數 ---
