@@ -231,7 +231,7 @@ def get_fundamentals(ticker):
         except:
             pass
 
-        # 4. [新增] 抓取分析師預估數據 (Estimates)
+        # 4. 抓取分析師預估數據 (Estimates)
         earnings_est = None
         eps_trend = None
         try:
@@ -247,12 +247,13 @@ def get_fundamentals(ticker):
             'MarketCap': market_cap,
             'GrossMargin': info.get('grossMargins', None),
             'OperatingMargin': info.get('operatingMargins', None),
+            'EarningsGrowth': info.get('earningsGrowth', None), # [新增] 獲利成長率，用於手算 PEG
             'ContractLiabilities': contract_liabilities,
             'TrailingPE': info.get('trailingPE', None),
             'PEG': info.get('pegRatio', None),
-            'ForwardEPS': info.get('forwardEps', None), # [新增] 直接抓取 Forward EPS 數值
-            'EarningsEst': earnings_est,                # [新增] 預估詳情
-            'EPSTrend': eps_trend                       # [新增] 趨勢詳情
+            'ForwardEPS': info.get('forwardEps', None),
+            'EarningsEst': earnings_est,
+            'EPSTrend': eps_trend
         }
     except Exception as e:
         print(f"Fundamentals error for {ticker}: {e}")
@@ -539,12 +540,24 @@ def render_stock_strategy_page():
             else:
                 f2.metric("P/E", "N/A")
 
-            # PEG
+            # PEG (包含手動估算邏輯)
             peg = fund_data.get('PEG')
+            peg_est = False
+            
+            # 如果抓不到官方 PEG，嘗試手動計算: PE / (Earnings Growth * 100)
+            if peg is None:
+                pe_val = fund_data.get('TrailingPE')
+                growth = fund_data.get('EarningsGrowth')
+                if pe_val and growth and growth > 0:
+                    peg = pe_val / (growth * 100)
+                    peg_est = True
+
             if peg:
-                f3.metric("PEG (本益成長比)", f"{peg:.2f}")
+                label = "PEG (Est.)" if peg_est else "PEG (本益成長比)"
+                desc = "基於近期獲利成長率推算之 PEG" if peg_est else "Price/Earnings to Growth Ratio"
+                f3.metric(label, f"{peg:.2f}", help=desc)
             else:
-                f3.metric("PEG", "N/A")
+                f3.metric("PEG", "N/A", help="無法取得 PEG 或獲利成長率數據")
 
             # P/FCF
             p_fcf = fund_data.get('P/FCF')
