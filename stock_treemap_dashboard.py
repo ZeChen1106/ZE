@@ -66,7 +66,7 @@ st.markdown("""
     
     /* 5. Expander 標題 */
     .streamlit-expanderHeader p {
-        color: #000000 !important;
+        color: #2b7de9 !important;
         font-weight: 700 !important;
         font-size: 1.1rem !important;
     }
