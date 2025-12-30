@@ -153,22 +153,123 @@ def get_commodity_data():
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, period="2y"):
     """獲取單一股票的詳細數據"""
-    data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
-    
-    # yfinance 有時會回傳 MultiIndex (Price, Ticker)，需轉為單層 Index 避免錯誤
-    if isinstance(data.columns, pd.MultiIndex):
-        try:
-            # 嘗試取得 Price 層級 (Open, Close 等)
-            data.columns = data.columns.get_level_values(0)
-        except Exception:
-            pass # 如果失敗則維持原狀，避免崩潰
+    try:
+        data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+        
+        # 1. 處理 MultiIndex (針對 yfinance 新版行為)
+        if isinstance(data.columns, pd.MultiIndex):
+            # 如果第一層包含 'Close'，通常結構是 (Price, Ticker)，取第一層
+            if 'Close' in data.columns.get_level_values(0):
+                data.columns = data.columns.get_level_values(0)
+            # 如果第二層包含 'Close'，通常結構是 (Ticker, Price) - 較少見但以防萬一
+            elif data.columns.nlevels > 1 and 'Close' in data.columns.get_level_values(1):
+                data.columns = data.columns.get_level_values(1)
 
-    return data
+        # 2. 清除空值列 (關鍵修復：避免抓到當日尚未開盤的空資料)
+        if not data.empty and 'Close' in data.columns:
+            data = data.dropna(subset=['Close'])
+
+        return data
+    except Exception as e:
+        print(f"Error fetching {ticker}: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=12 * 3600)
+def get_fundamentals(ticker):
+    """
+    嘗試獲取基本面數據 (P/FCF, 毛利率, 合約負債, P/E, PEG, Estimates 等)
+    注意：這比抓股價慢，且 yfinance 對台股的基本面支援度較差
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        # 1. 嘗試計算 FCF
+        # 方法 A: info 中直接有 (較少見)
+        fcf = info.get('freeCashflow', None)
+        
+        # 方法 B: 手動計算 (Operating Cash Flow + Capital Expenditure)
+        if fcf is None:
+            try:
+                cf = stock.cashflow
+                if not cf.empty:
+                    # 嘗試抓取最近一期的年報或季報
+                    op_cf = None
+                    capex = None
+                    
+                    # 尋找營運現金流
+                    for col in ['Operating Cash Flow', 'Total Cash From Operating Activities']:
+                        if col in cf.index:
+                            op_cf = cf.loc[col].iloc[0]
+                            break
+                    
+                    # 尋找資本支出
+                    for col in ['Capital Expenditure', 'Capital Expenditures']:
+                        if col in cf.index:
+                            capex = cf.loc[col].iloc[0]
+                            break
+                            
+                    if op_cf is not None and capex is not None:
+                        fcf = op_cf + capex # CapEx is usually negative
+            except:
+                pass
+
+        # 2. 計算 P/FCF
+        market_cap = info.get('marketCap', None)
+        p_fcf = None
+        if fcf and market_cap and fcf > 0:
+            p_fcf = market_cap / fcf
+
+        # 3. 嘗試抓取合約負債 (RPO Proxy)
+        contract_liabilities = None
+        try:
+            bs = stock.balance_sheet
+            for col in ['Contract Liabilities', 'Deferred Revenue', 'Current Deferred Revenue']:
+                if col in bs.index:
+                    contract_liabilities = bs.loc[col].iloc[0]
+                    break
+        except:
+            pass
+
+        # 4. [新增] 抓取分析師預估數據 (Estimates)
+        earnings_est = None
+        eps_trend = None
+        try:
+            # 這些屬性會回傳 DataFrame，包含未來幾季/年的預估
+            earnings_est = stock.earnings_estimate
+            eps_trend = stock.eps_trend
+        except:
+            pass
+
+        return {
+            'P/FCF': p_fcf,
+            'FCF': fcf,
+            'MarketCap': market_cap,
+            'GrossMargin': info.get('grossMargins', None),
+            'OperatingMargin': info.get('operatingMargins', None),
+            'ContractLiabilities': contract_liabilities,
+            'TrailingPE': info.get('trailingPE', None),
+            'PEG': info.get('pegRatio', None),
+            'ForwardEPS': info.get('forwardEps', None), # [新增] 直接抓取 Forward EPS 數值
+            'EarningsEst': earnings_est,                # [新增] 預估詳情
+            'EPSTrend': eps_trend                       # [新增] 趨勢詳情
+        }
+    except Exception as e:
+        print(f"Fundamentals error for {ticker}: {e}")
+        return {}
 
 def check_ticker_validity(ticker):
     """檢查代號是否有效 (嘗試抓取 5 天數據)"""
     try:
         data = yf.download(ticker, period="5d", progress=False)
+        # 同樣清除空值，避免誤判
+        if isinstance(data.columns, pd.MultiIndex):
+             if 'Close' in data.columns.get_level_values(0):
+                data.columns = data.columns.get_level_values(0)
+        
+        if not data.empty and 'Close' in data.columns:
+             data = data.dropna(subset=['Close'])
+             
         return not data.empty
     except:
         return False
@@ -349,21 +450,36 @@ def render_stock_strategy_page():
         
         # [新增] 台股代號防呆機制：若只輸入4位數字，預設為台股上市 (加上 .TW)
         if ticker.isdigit() and len(ticker) == 4:
-            st.caption(f"💡 偵測到數字代號，已自動轉換為台股上市格式：{ticker}.TW")
-            ticker = f"{ticker}.TW"
+            # 先嘗試 .TW (上市)
+            test_ticker = f"{ticker}.TW"
+            st.caption(f"💡 偵測到數字代號，將以台股上市模式查詢：{test_ticker}")
+            ticker = test_ticker
 
         # --- 步驟 1: 驗證代號 ---
         with st.spinner(f"正在連線交易所查詢 {ticker} ..."):
             is_valid = check_ticker_validity(ticker)
             
+            # 若 .TW 查無資料，自動嘗試 .TWO (上櫃)
+            if not is_valid and ticker.endswith('.TW'):
+                ticker_two = ticker.replace('.TW', '.TWO')
+                st.caption(f"⚠️ {ticker} 查無資料，嘗試查詢上櫃代號：{ticker_two} ...")
+                if check_ticker_validity(ticker_two):
+                    ticker = ticker_two
+                    is_valid = True
+                    st.success(f"✅ 成功找到上櫃股票：{ticker}")
+
         if not is_valid:
             st.error(f"❌ 查無代號：{ticker}")
-            st.info("💡 提示：台股請加上 .TW (例如 2330.TW)，美股直接輸入代號 (例如 AAPL)。請檢查拼字或網路連線。")
+            st.info("💡 提示：請確認代號是否正確。台股上市請用 .TW，上櫃請用 .TWO (若系統未自動抓到)。")
             return
 
         # --- 步驟 2: 獲取詳細數據與計算 ---
-        with st.spinner(f"✅ 代號確認！正在計算 {ticker} 技術指標..."):
+        with st.spinner(f"✅ 代號確認！正在計算 {ticker} 技術指標與基本面..."):
             df = get_stock_data(ticker, period=timeframe)
+            
+            # [新增] 同步獲取基本面數據
+            fund_data = get_fundamentals(ticker)
+
             if df.empty or len(df) < 50: # 至少要有足夠數據算 MA50
                 st.warning("⚠️ 數據不足，無法進行完整技術分析 (可能是新上市股票)。")
                 return
@@ -402,6 +518,162 @@ def render_stock_strategy_page():
             macd_val = last_row['MACD_Hist']
             macd_sig = "多方控盤" if macd_val > 0 else "空方控盤"
             m4.metric("MACD 動能", f"{macd_val:.2f}", macd_sig)
+
+            # --- [更新] 基本面快照區塊 (分兩列顯示) ---
+            st.markdown("### 2. 基本面體質快照 (Fundamental Snapshot)")
+            
+            # 第一列: 估值與成長 (新增 Forward EPS)
+            f1, f2, f3, f4 = st.columns(4)
+            
+            # Forward EPS
+            fwd_eps = fund_data.get('ForwardEPS')
+            if fwd_eps:
+                f1.metric("Forward EPS (預估每股盈餘)", f"${fwd_eps:.2f}")
+            else:
+                f1.metric("Forward EPS", "N/A")
+
+            # P/E
+            pe = fund_data.get('TrailingPE')
+            if pe:
+                f2.metric("P/E (本益比)", f"{pe:.1f}x")
+            else:
+                f2.metric("P/E", "N/A")
+
+            # PEG
+            peg = fund_data.get('PEG')
+            if peg:
+                f3.metric("PEG (本益成長比)", f"{peg:.2f}")
+            else:
+                f3.metric("PEG", "N/A")
+
+            # P/FCF
+            p_fcf = fund_data.get('P/FCF')
+            if p_fcf:
+                f4.metric("P/FCF (股價/自由現金流)", f"{p_fcf:.1f}x")
+            else:
+                f4.metric("P/FCF", "N/A", help="無法取得現金流數據或 FCF 為負")
+
+            st.write("") # Spacer
+
+            # 第二列: 獲利能力與其他
+            f5, f6, f7 = st.columns(3)
+
+            # 毛利率
+            gm = fund_data.get('GrossMargin')
+            if gm:
+                f5.metric("毛利率 (Gross Margin)", f"{gm*100:.1f}%")
+            else:
+                f5.metric("毛利率", "N/A")
+
+            # 營益率
+            om = fund_data.get('OperatingMargin')
+            if om:
+                f6.metric("營益率 (Operating Margin)", f"{om*100:.1f}%")
+            else:
+                f6.metric("營益率", "N/A")
+                
+            # 合約負債
+            cl = fund_data.get('ContractLiabilities')
+            if cl:
+                val_str = f"${cl/1e9:.1f}B" if cl > 1e9 else f"${cl/1e6:.1f}M"
+                f7.metric("合約負債 (RPO Proxy)", val_str, help="Contract Liabilities / Deferred Revenue，可作為未來營收的積壓指標")
+            else:
+                f7.metric("RPO / 合約負債", "N/A", help="yfinance 未提供此非標準數據")
+
+            # --- [新增] 3. 分析師 EPS 預估詳情 (圖表) ---
+            st.markdown("### 3. 🔮 分析師 EPS 預估詳情 (Analyst Estimates)")
+            
+            est_df = fund_data.get('EarningsEst')
+            trend_df = fund_data.get('EPSTrend')
+            
+            has_est_data = est_df is not None and not est_df.empty
+            has_trend_data = trend_df is not None and not trend_df.empty
+
+            if not has_est_data and not has_trend_data:
+                st.warning("⚠️ 查無分析師預估數據 (Estimates Data Unavailable)。這通常發生在非美股市場或小型股。")
+            else:
+                tab_est1, tab_est2 = st.tabs(["📊 未來 4 季預估 (Future Quarters)", "📈 預估修正趨勢 (Revision Trend)"])
+                
+                # Tab 1: 未來季度預估 (長條圖)
+                with tab_est1:
+                    if has_est_data:
+                        try:
+                            # yfinance earnings_estimate 格式通常包含 'avg', 'low', 'high' 等 row
+                            # 欄位通常是 '0q' (本季), '+1q', '+2q', '+3q', '0y', '+1y'
+                            # 我們嘗試抓取 Quarterly 的 columns
+                            target_cols = [c for c in est_df.columns if 'q' in c] # 找出季度欄位
+                            if not target_cols:
+                                target_cols = [c for c in est_df.columns if 'y' in c] # 若無季度，改抓年度
+                                period_name = "年度 (Yearly)"
+                            else:
+                                period_name = "季度 (Quarterly)"
+                                
+                            # 轉置 DataFrame 以方便繪圖 (Rows 變 Columns)
+                            # est_df 的 index 通常是 'avg', 'low', 'high', etc.
+                            plot_df = est_df.loc[['avg', 'low', 'high'], target_cols].T.reset_index()
+                            plot_df.columns = ['Period', 'Average', 'Low', 'High']
+                            
+                            fig_est = px.bar(
+                                plot_df, x='Period', y='Average',
+                                title=f"分析師未來 {period_name} EPS 預估平均值 (12 個月展望)",
+                                text_auto='.2f',
+                                color='Average',
+                                color_continuous_scale='Blues'
+                            )
+                            # 加上 High/Low Error Bars
+                            fig_est.update_traces(
+                                error_y=dict(type='data', array=plot_df['High']-plot_df['Average'], arrayminus=plot_df['Average']-plot_df['Low'], visible=True)
+                            )
+                            st.plotly_chart(fig_est, use_container_width=True)
+                            st.caption("註：0q = 本季, +1q = 下一季。Bar 代表平均預估，誤差線代表最高/最低預估範圍。")
+                        except Exception as e:
+                            st.info(f"無法解析預估數據格式: {e}")
+                            st.dataframe(est_df) # Debug fallback
+                    else:
+                        st.info("無未來季度預估資料。")
+
+                # Tab 2: 預估修正趨勢 (折線圖)
+                with tab_est2:
+                    if has_trend_data:
+                        try:
+                            # eps_trend 格式: Index 是 Period (0y, +1y), Columns 是 時間點 (current, 7daysAgo, 30daysAgo...)
+                            # 我們需要轉置它：X軸=時間點, Y軸=EPS, 線條=0y(今年)/+1y(明年)
+                            
+                            # 1. 整理數據
+                            trend_plot = trend_df.T # 轉置
+                            # trend_plot 的 index 現在是 'current', '7daysAgo', ...
+                            # 確保順序是從過去到現在: 90daysAgo -> 60 -> 30 -> 7 -> current
+                            time_order = ['90daysAgo', '60daysAgo', '30daysAgo', '7daysAgo', 'current']
+                            # 過濾只存在的欄位
+                            valid_order = [t for t in time_order if t in trend_plot.index]
+                            trend_plot = trend_plot.loc[valid_order]
+                            
+                            fig_trend = go.Figure()
+                            # 針對每一個 Period (0y, +1y...) 畫一條線
+                            for col in trend_plot.columns:
+                                label_map = {'0y': '今年 (Current Year)', '+1y': '明年 (Next Year)', '0q': '本季', '+1q': '下季'}
+                                label = label_map.get(col, col)
+                                
+                                fig_trend.add_trace(go.Scatter(
+                                    x=trend_plot.index, 
+                                    y=trend_plot[col], 
+                                    mode='lines+markers',
+                                    name=label
+                                ))
+                            
+                            fig_trend.update_layout(
+                                title="過去 90 天分析師 EPS 預估修正趨勢 (EPS Revision)",
+                                xaxis_title="時間點 (Time)",
+                                yaxis_title="EPS 預估值 ($)",
+                                hovermode="x unified"
+                            )
+                            st.plotly_chart(fig_trend, use_container_width=True)
+                            st.caption("解讀：線圖往上代表分析師正在「上修」獲利預估 (利多)；往下代表「下修」 (利空)。")
+                        except Exception as e:
+                             st.info(f"無法解析趨勢數據: {e}")
+                             st.dataframe(trend_df)
+                    else:
+                        st.info("無預估修正趨勢資料。")
 
             # --- B. 圖表區域 ---
             st.markdown("---")
@@ -458,6 +730,7 @@ def render_stock_strategy_page():
                 """)
 
             # --- D. 綜合建議 ---
+            st.markdown("---")
             st.markdown("### 🤖 系統綜合評語")
             if trend_status.startswith("🚀") and rsi_val < 70 and macd_val > 0:
                 st.success(f"目前 {ticker} 處於強勢多頭趨勢，且尚未過度超買。依據 PDF 順勢交易原則，可沿 MA20 操作，設好停損。")
