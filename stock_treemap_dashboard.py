@@ -1,11 +1,14 @@
 # ----------------------------------------------------------------------
 # 股市戰情室 - 旗艦版 (含資金籌碼、總經、與 個股/ETF 深度技術分析)
-# [版本說明]
-# Style: High Contrast Light Theme (高對比亮色主題，字體加深)
-# Features:
-#   1. S&P 500 熱力圖修復 (KeyError 'Name' fixed)
-#   2. 強制圖表黑字白底 (High visibility)
-#   3. 平行運算抓取基本面 (Parallel Fetching)
+# Style: High Contrast Light Theme (All Text Darkened)
+# Optimization: 
+#   1. Parallel Fetching for Fundamentals (Significant speedup for single stock)
+#   2. Vectorized Calculation for Market Dashboard (Speedup for S&P 500)
+#   3. Reduced data fetch period for Macro (1y)
+# Fixes:
+#   1. Expander Header Style: Dark Background + White Text
+#   2. Removed empty/filler metric blocks in Fundamentals
+#   3. [NEW] Fundamentals Stability: Added manual calculation from Financial Statements
 # ----------------------------------------------------------------------
 
 import streamlit as st
@@ -26,65 +29,67 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- [UI/UX] CSS 全局高對比深色字體注入 ---
-# 說明：此區塊強制覆蓋 Streamlit 預設樣式，確保在亮色背景下文字為深黑，提升閱讀性。
+# --- CSS 全局高對比深色字體注入 ---
 st.markdown("""
 <style>
     /* 引入現代字體 Inter */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
     
-    /* 1. 全局基礎設定 - 強制深色字體與淺灰背景 */
+    /* 1. 全局基礎設定 - 強制深色 */
     html, body, .stApp {
         font-family: 'Inter', sans-serif;
         color: #000000 !important; /* 純黑字體 */
         background-color: #f8f9fa;
     }
 
-    /* 2. 針對 Markdown 內文加深 */
+    /* 2. 針對所有 Markdown 內文 */
     .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown div {
         color: #111111 !important;
         font-weight: 500;
     }
 
-    /* 3. 標題層級強化 (H1-H6) */
+    /* 3. 所有標題 (H1-H6) */
     h1, h2, h3, h4, h5, h6, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
         color: #000000 !important;
         font-weight: 800 !important;
         letter-spacing: -0.5px;
     }
     
-    /* 自定義標題裝飾線 */
+    /* 標題裝飾線 */
     h3 {
         margin-top: 1rem;
         border-left: 5px solid #2b7de9;
         padding-left: 10px;
     }
 
-    /* 4. 輸入元件 (Input Widgets) 標籤加深 */
+    /* 4. 輸入元件標籤 */
     .stTextInput label, .stSelectbox label, .stNumberInput label, .stRadio label {
         color: #000000 !important;
         font-weight: 700 !important;
         font-size: 1rem !important;
     }
     
-    /* 5. Expander (折疊區塊) 標題優化 */
+    /* 5. Expander 標題優化 (深底白字) */
+    .streamlit-expanderHeader {
+        background-color: #262730 !important; /* 深色背景 */
+        border-radius: 8px;
+    }
     .streamlit-expanderHeader p {
-        color: #000000 !important;
-        background-color: #f8f9fa;
+        color: #FFFFFF !important; /* 白色字體 */
         font-weight: 700 !important;
         font-size: 1.1rem !important;
     }
 
-    /* 6. Tabs 分頁標籤 */
+    /* 6. Tabs 標籤 */
     .stTabs button {
         color: #333333 !important;
         font-weight: 700 !important;
     }
     .stTabs [aria-selected="true"] {
-        color: #2b7de9 !important; /* 選中時呈現藍色 */
+        color: #2b7de9 !important;
     }
 
-    /* 7. Metric (關鍵指標) 元件優化 */
+    /* 7. Metric 指標元件 */
     [data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #d1d5db;
@@ -112,7 +117,7 @@ st.markdown("""
         font-weight: 800 !important;
     }
     
-    /* 8. 側邊欄樣式 */
+    /* 8. 側邊欄 */
     [data-testid="stSidebar"] {
         background-color: #ffffff;
         border-right: 1px solid #e5e7eb;
@@ -121,13 +126,13 @@ st.markdown("""
         color: #111111 !important;
     }
 
-    /* 9. 輔助文字 (Caption) */
+    /* 9. Caption */
     .stCaption {
         color: #555555 !important;
         font-size: 0.9rem !important;
     }
 
-    /* 自定義 Dashboard 卡片容器 */
+    /* Dashboard Card */
     .dashboard-card {
         background-color: #ffffff;
         padding: 25px;
@@ -144,7 +149,7 @@ st.markdown("""
         color: #ffffff !important;
     }
 
-    /* 狀態顏色定義 (深色版，適合白底) */
+    /* 狀態顏色 */
     .bullish { color: #059669 !important; font-weight: 800; }
     .bearish { color: #DC2626 !important; font-weight: 800; }
     .neutral { color: #D97706 !important; font-weight: 800; }
@@ -184,11 +189,10 @@ with st.sidebar:
 st.title(f"📊 {market_mode}")
 st.markdown("---")
 
-# --- 3. 核心數據函數 (股票清單) ---
+# --- 3. 核心數據函數 (股票) ---
 
 @st.cache_data(ttl=24 * 3600)
 def get_tw_constituents():
-    # [說明] 手動維護的台股清單，確保都是流動性高的權值股
     data = [
         {'Ticker': '2330.TW', 'Name': '台積電', 'Sector': '半導體', 'Industry': '晶圓代工'},
         {'Ticker': '2454.TW', 'Name': '聯發科', 'Sector': '半導體', 'Industry': 'IC設計'},
@@ -215,11 +219,9 @@ def get_tw_constituents():
 
 @st.cache_data(ttl=24 * 3600)
 def get_sp500_constituents():
-    # [修復] 從 GitHub 獲取 S&P 500 清單並標準化欄位名稱，避免 KeyError
     url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
     try:
         df = pd.read_csv(url)
-        # Rename 'Security' to 'Name' to match TWSE data structure
         rename_map = {'Symbol': 'Ticker', 'GICS Sector': 'Sector', 'GICS Sub-Industry': 'Industry', 'Security': 'Name'}
         df = df.rename(columns=rename_map)
         df['Ticker'] = df['Ticker'].str.replace('.', '-', regex=False)
@@ -238,7 +240,6 @@ def fetch_single_cap(ticker):
 
 @st.cache_data(ttl=24 * 3600)
 def fetch_market_caps(tickers):
-    # [優化] 使用 ThreadPool 加速市值獲取
     caps = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         results = executor.map(fetch_single_cap, tickers)
@@ -248,7 +249,6 @@ def fetch_market_caps(tickers):
 
 @st.cache_data(ttl=21600) 
 def fetch_price_history(tickers, period="1y"):
-    """下載大量股票歷史數據"""
     try:
         data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True, threads=True, progress=False)
         return data
@@ -261,7 +261,6 @@ def get_macro_data():
     tickers = ["^VIX", "^GSPC"]
     data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
     
-    # [修復] 強制校正 MultiIndex 層級，避免 KeyError
     if isinstance(data.columns, pd.MultiIndex):
         level0 = data.columns.get_level_values(0)
         if 'Close' in level0:
@@ -275,7 +274,6 @@ def get_commodity_data():
     tickers = ["BDRY", "DBC", "HG=F", "CL=F", "GC=F"]
     data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, progress=False)
     
-    # [修復] 同樣加入層級校正
     if isinstance(data.columns, pd.MultiIndex):
         level0 = data.columns.get_level_values(0)
         if 'Close' in level0:
@@ -286,7 +284,6 @@ def get_commodity_data():
 
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, period="2y"):
-    """獲取單一股票詳細數據，包含 MultiIndex 智能偵測"""
     try:
         data = yf.download(ticker, period=period, auto_adjust=True, progress=False)
         
@@ -296,7 +293,6 @@ def get_stock_data(ticker, period="2y"):
         if isinstance(data.columns, pd.MultiIndex):
             target_level = None
             found = False
-            # 自動搜尋包含 'Close' 的層級
             for i in range(data.columns.nlevels):
                 if 'Close' in data.columns.get_level_values(i):
                     target_level = i
@@ -306,7 +302,6 @@ def get_stock_data(ticker, period="2y"):
             if found:
                 data.columns = data.columns.get_level_values(target_level)
             else:
-                # 備援：尋找 Adj Close
                 for i in range(data.columns.nlevels):
                     if 'Adj Close' in data.columns.get_level_values(i):
                         target_level = i
@@ -315,7 +310,6 @@ def get_stock_data(ticker, period="2y"):
                 if not found and data.columns.nlevels > 1:
                      data.columns = data.columns.droplevel(0)
 
-        # 標準化欄位名稱
         if 'Adj Close' in data.columns and 'Close' not in data.columns:
             data.rename(columns={'Adj Close': 'Close'}, inplace=True)
 
@@ -329,7 +323,7 @@ def get_stock_data(ticker, period="2y"):
         print(f"Error fetching {ticker}: {e}")
         return pd.DataFrame()
 
-# [優化] 平行處理 Helper Functions - 隔離 API 呼叫
+# [優化] 平行處理 Helper Functions
 def _fetch_info_helper(stock):
     try: return stock.info
     except: return {}
@@ -342,6 +336,10 @@ def _fetch_balance_sheet_helper(stock):
     try: return stock.balance_sheet
     except: return pd.DataFrame()
 
+def _fetch_financials_helper(stock): # 新增：損益表
+    try: return stock.financials
+    except: return pd.DataFrame()
+
 def _fetch_estimates_helper(stock):
     try: return stock.earnings_estimate, stock.eps_trend, stock.recommendations_summary
     except: return None, None, None
@@ -349,8 +347,7 @@ def _fetch_estimates_helper(stock):
 @st.cache_data(ttl=12 * 3600)
 def get_fundamentals(ticker):
     """
-    [核心優化] 使用 ThreadPoolExecutor 平行抓取基本面數據，大幅提升速度
-    並包含 Fuzzy Lookup (模糊搜尋) 來應對 yfinance 欄位名稱變動
+    [核心優化] 使用 ThreadPoolExecutor 平行抓取，並加入財報手動計算作為備援
     """
     result = {
         'P/FCF': None, 'FCF': None, 'MarketCap': None,
@@ -367,16 +364,18 @@ def get_fundamentals(ticker):
     try:
         stock = yf.Ticker(ticker)
         
-        # 平行發送請求
+        # 平行發送請求 (新增 financials)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_info = executor.submit(_fetch_info_helper, stock)
             future_cf = executor.submit(_fetch_cashflow_helper, stock)
             future_bs = executor.submit(_fetch_balance_sheet_helper, stock)
+            future_fin = executor.submit(_fetch_financials_helper, stock)
             future_est = executor.submit(_fetch_estimates_helper, stock)
             
             info = future_info.result()
             cf = future_cf.result()
             bs = future_bs.result()
+            fin = future_fin.result() # Income Statement
             est_data = future_est.result() 
 
         info_lower = {k.lower(): v for k, v in info.items()} if info else {}
@@ -387,7 +386,7 @@ def get_fundamentals(ticker):
                     return info_lower[k.lower()]
             return default
 
-        # 填入數據
+        # 1. 優先使用 Info 中的數據
         result['MarketCap'] = get_val(['marketCap'])
         result['GrossMargin'] = get_val(['grossMargins', 'grossMargin'])
         result['OperatingMargin'] = get_val(['operatingMargins', 'operatingMargin'])
@@ -397,23 +396,58 @@ def get_fundamentals(ticker):
         result['PEG'] = get_val(['pegRatio'])
         result['ForwardEPS'] = get_val(['forwardEps', 'forwardEPS'])
         
-        # 數值推算備援 (Fallback Calculations)
+        # 2. 手動計算備援：從損益表 (Income Statement) 計算 Margin 與 PE
+        if not fin.empty:
+            try:
+                # 模糊搜尋 Index (Total Revenue, Gross Profit, Operating Income, Net Income)
+                rev = None
+                gross_profit = None
+                op_inc = None
+                net_inc = None
+                basic_eps = None
+                
+                for idx in fin.index:
+                    idx_str = str(idx).lower()
+                    if 'total' in idx_str and 'revenue' in idx_str: rev = fin.loc[idx].iloc[0]
+                    if 'gross' in idx_str and 'profit' in idx_str: gross_profit = fin.loc[idx].iloc[0]
+                    if 'operating' in idx_str and 'income' in idx_str: op_inc = fin.loc[idx].iloc[0]
+                    if 'net' in idx_str and 'income' in idx_str: net_inc = fin.loc[idx].iloc[0]
+                    if 'basic' in idx_str and 'eps' in idx_str: basic_eps = fin.loc[idx].iloc[0]
+
+                # 補救 Gross Margin
+                if result['GrossMargin'] is None and rev and gross_profit:
+                    result['GrossMargin'] = gross_profit / rev
+                
+                # 補救 Operating Margin
+                if result['OperatingMargin'] is None and rev and op_inc:
+                    result['OperatingMargin'] = op_inc / rev
+                
+                # 補救 Trailing PE (股價 / Basic EPS)
+                curr_price = get_val(['currentPrice', 'regularMarketPrice', 'ask', 'bid'])
+                if result['TrailingPE'] is None and curr_price and basic_eps:
+                    result['TrailingPE'] = curr_price / basic_eps
+
+            except: pass
+
+        # 3. 補救 Forward EPS (股價 / ForwardPE)
         if result['ForwardEPS'] is None and result['ForwardPE']:
              curr_price = get_val(['currentPrice', 'regularMarketPrice', 'ask', 'bid'])
              if curr_price:
                  result['ForwardEPS'] = curr_price / result['ForwardPE']
 
+        # 4. 補救 PEG
         if result['PEG'] is None and result['TrailingPE'] and result['EarningsGrowth']:
              if result['EarningsGrowth'] > 0:
                 result['PEG'] = result['TrailingPE'] / (result['EarningsGrowth'] * 100)
 
+        # 分析師數據
         result['TargetMean'] = get_val(['targetMeanPrice'])
         result['TargetHigh'] = get_val(['targetHighPrice'])
         result['TargetLow'] = get_val(['targetLowPrice'])
         result['Recommendation'] = get_val(['recommendationKey'])
         result['NumAnalysts'] = get_val(['numberOfAnalystOpinions'])
 
-        # 現金流解析
+        # 5. 現金流解析
         fcf = get_val(['freeCashflow'])
         if fcf is None and not cf.empty:
             try:
@@ -422,7 +456,7 @@ def get_fundamentals(ticker):
                 capex = None
                 for idx in recent_cf.index:
                     idx_str = str(idx).lower()
-                    if 'operating' in idx_str and 'cash' in idx_str:
+                    if ('operating' in idx_str and 'cash' in idx_str) or 'total cash from operating activities' in idx_str:
                         op_cf = recent_cf[idx]
                     if 'capital' in idx_str and 'expenditure' in idx_str:
                         capex = recent_cf[idx]
@@ -435,7 +469,7 @@ def get_fundamentals(ticker):
         if fcf and result['MarketCap'] and fcf > 0:
             result['P/FCF'] = result['MarketCap'] / fcf
 
-        # 資產負債表解析
+        # 6. 資產負債表解析
         if not bs.empty:
             try:
                 for idx in bs.index:
@@ -446,6 +480,7 @@ def get_fundamentals(ticker):
                         break
             except: pass
 
+        # 7. 分析師預估
         if est_data:
             result['EarningsEst'] = est_data[0]
             result['EPSTrend'] = est_data[1]
@@ -499,15 +534,11 @@ def calculate_indicators(df):
 
 # --- 6. 核心計算邏輯 (股票) ---
 def process_data_for_periods(base_df, history_data, market_caps):
-    """
-    [優化] 向量化運算，極大化提升市場儀表板計算速度
-    """
     if history_data.empty:
         return pd.DataFrame()
 
     closes = pd.DataFrame()
     
-    # 處理 MultiIndex，提取 Close 數據
     if isinstance(history_data.columns, pd.MultiIndex):
         level0 = history_data.columns.get_level_values(0)
         if 'Close' in level0:
@@ -787,6 +818,8 @@ def render_stock_strategy_page():
                 f4.metric("P/FCF", f"{p_fcf:.1f}x" if p_fcf is not None else "N/A")
 
                 st.write("")
+                
+                # [Clean-up] Removed redundant date block, using 3 columns only
                 f5, f6, f7 = st.columns(3)
 
                 gm = fund_data.get('GrossMargin')
