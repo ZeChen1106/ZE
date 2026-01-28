@@ -38,19 +38,19 @@ st.markdown("""
     /* 1. 全局基礎設定 - 強制深色 */
     html, body, .stApp {
         font-family: 'Inter', sans-serif;
-        color: #000000 !important; /* 純黑字體 */
-        background-color: #f8f9fa;
+        color: #FAFAFA !important; /* 淺色字體 */
+        background-color: #0E1117; /* 深色背景 */
     }
 
     /* 2. 針對所有 Markdown 內文 */
     .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown div {
-        color: #111111 !important;
+        color: #E0E0E0 !important;
         font-weight: 500;
     }
 
     /* 3. 所有標題 (H1-H6) */
     h1, h2, h3, h4, h5, h6, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-        color: #000000 !important;
+        color: #FFFFFF !important;
         font-weight: 800 !important;
         letter-spacing: -0.5px;
     }
@@ -64,81 +64,89 @@ st.markdown("""
 
     /* 4. 輸入元件標籤 */
     .stTextInput label, .stSelectbox label, .stNumberInput label, .stRadio label {
-        color: #000000 !important;
+        color: #FAFAFA !important;
         font-weight: 700 !important;
         font-size: 1rem !important;
     }
     
     /* 5. Expander 標題優化 (深底白字) */
     .streamlit-expanderHeader {
-        background-color: #262730 !important; /* 深色背景 */
+        background-color: #262730 !important;
         border-radius: 8px;
+        border: 1px solid #444444;
     }
     .streamlit-expanderHeader p {
-        color: #FFFFFF !important; /* 白色字體 */
+        color: #FFFFFF !important;
         font-weight: 700 !important;
         font-size: 1.1rem !important;
+    }
+    
+    /* Expander Content Background */
+    .streamlit-expanderContent {
+        background-color: #1E1E1E !important;
+        color: #E0E0E0 !important;
     }
 
     /* 6. Tabs 標籤 */
     .stTabs button {
-        color: #333333 !important;
+        color: #E0E0E0 !important;
         font-weight: 700 !important;
     }
     .stTabs [aria-selected="true"] {
         color: #2b7de9 !important;
+        border-bottom-color: #2b7de9 !important;
     }
 
     /* 7. Metric 指標元件 */
     [data-testid="stMetric"] {
-        background-color: #ffffff;
-        border: 1px solid #d1d5db;
+        background-color: #262730;
+        border: 1px solid #444444;
         padding: 15px 20px;
         border-radius: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.08);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
         transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
     
     [data-testid="stMetric"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        box-shadow: 0 5px 15px rgba(0,0,0,0.3);
         border-color: #2b7de9;
     }
 
     [data-testid="stMetricLabel"] {
         font-size: 15px !important;
-        color: #444444 !important;
+        color: #B0B0B0 !important;
         font-weight: 700 !important;
     }
 
     [data-testid="stMetricValue"] {
         font-size: 28px !important;
-        color: #000000 !important;
+        color: #FFFFFF !important;
         font-weight: 800 !important;
     }
     
     /* 8. 側邊欄 */
     [data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #e5e7eb;
+        background-color: #262730;
+        border-right: 1px solid #444444;
     }
     [data-testid="stSidebar"] * {
-        color: #111111 !important;
+        color: #E0E0E0 !important;
     }
 
     /* 9. Caption */
     .stCaption {
-        color: #555555 !important;
+        color: #A0A0A0 !important;
         font-size: 0.9rem !important;
     }
 
     /* Dashboard Card */
     .dashboard-card {
-        background-color: #ffffff;
+        background-color: #262730;
         padding: 25px;
         border-radius: 12px;
-        border: 1px solid #d1d5db;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        border: 1px solid #444444;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         margin-bottom: 25px;
     }
 
