@@ -87,6 +87,12 @@ st.markdown("""
         color: #E0E0E0 !important;
     }
 
+    /* Expander Content Background */
+    .streamlit-expanderContent {
+        background-color: #1E1E1E !important;
+        color: #E0E0E0 !important;
+    }
+
     /* 6. Tabs 標籤 */
     .stTabs button {
         color: #E0E0E0 !important;
@@ -619,13 +625,14 @@ def plot_treemap(df, change_col, title, color_range):
         textfont=dict(family="Arial Black", size=15), 
         hovertemplate='<b>%{label}</b><br>代號: %{customdata[0]}<br>股價: %{customdata[1]:.2f}<br>漲跌幅: %{customdata[2]:.2f}%'
     )
-    # [Fix] Enforce High Contrast Black Text
+    # [Fix] Enforce Dark Theme
     fig.update_layout(
+        template='plotly_dark',
         height=600, 
         margin=dict(t=20, l=10, r=10, b=10),
-        font=dict(color='black', size=14),
-        paper_bgcolor='white',
-        plot_bgcolor='white'
+        font=dict(color='#FAFAFA', size=14),
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#0E1117'
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -633,10 +640,10 @@ def plot_gauge(score):
     fig = go.Figure(go.Indicator(
         mode = "gauge+number", value = score,
         domain = {'x': [0, 1], 'y': [0, 1]}, 
-        title = {'text': "市場情緒 (Proxy)", 'font': {'size': 18, 'color': 'black'}},
+        title = {'text': "市場情緒 (Proxy)", 'font': {'size': 18, 'color': '#FAFAFA'}},
         gauge = {
-            'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': 'black'}, 
-            'bar': {'color': "darkblue"},
+            'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': '#FAFAFA'},
+            'bar': {'color': "#2b7de9"},
             'steps': [
                 {'range': [0, 25], 'color': '#ff4b4b'}, # Red
                 {'range': [25, 45], 'color': '#ffbaba'}, # Light Red
@@ -646,27 +653,29 @@ def plot_gauge(score):
             ]
         }
     ))
-    # [Fix] Enforce High Contrast Black Text
+    # [Fix] Enforce Dark Theme
     fig.update_layout(
+        template='plotly_dark',
         height=300, 
         margin=dict(t=60, b=20, l=30, r=30),
-        paper_bgcolor='white',
-        plot_bgcolor='white',
-        font=dict(color='black')
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#0E1117',
+        font=dict(color='#FAFAFA')
     )
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_line_chart(data, title, color):
     fig = px.line(data, title=title)
     fig.update_traces(line_color=color, line_width=2)
-    # [Fix] Enforce High Contrast Black Text
+    # [Fix] Enforce Dark Theme
     fig.update_layout(
+        template='plotly_dark',
         height=350, 
         margin=dict(l=20, r=20, t=40, b=20), 
         xaxis_title=None, yaxis_title=None,
-        paper_bgcolor='white',
-        plot_bgcolor='white',
-        font=dict(color='black')
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#0E1117',
+        font=dict(color='#FAFAFA')
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -704,18 +713,19 @@ def plot_tech_chart(df, ticker, title):
     colors_hist = ['green' if v >= 0 else 'red' for v in df['MACD_Hist']]
     fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors_hist, name='Hist'), row=4, col=1)
 
-    # [Fix] Enforce High Contrast Black Text & Light Grid
+    # [Fix] Enforce Dark Theme
     fig.update_layout(
+        template='plotly_dark',
         height=900, 
         xaxis_rangeslider_visible=False,
         hovermode='x unified',
-        plot_bgcolor='white',
-        paper_bgcolor='white',
+        plot_bgcolor='#0E1117',
+        paper_bgcolor='#0E1117',
         margin=dict(t=30, b=30),
-        font=dict(color='black')
+        font=dict(color='#FAFAFA')
     )
-    fig.update_xaxes(showgrid=True, gridcolor='#e0e0e0')
-    fig.update_yaxes(showgrid=True, gridcolor='#e0e0e0')
+    fig.update_xaxes(showgrid=True, gridcolor='#333333')
+    fig.update_yaxes(showgrid=True, gridcolor='#333333')
     
     st.plotly_chart(fig, use_container_width=True)
 
@@ -898,7 +908,7 @@ def render_stock_strategy_page():
                                         
                                         fig_est = px.bar(plot_df, x='Period', y='Average', title="分析師 EPS 預估", text_auto='.2f', color='Average', color_continuous_scale='Blues')
                                         fig_est.update_traces(error_y=dict(type='data', array=plot_df['High']-plot_df['Average'], arrayminus=plot_df['Average']-plot_df['Low'], visible=True))
-                                        fig_est.update_layout(plot_bgcolor='white', font=dict(color='black'))
+                                        fig_est.update_layout(template='plotly_dark', plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='#FAFAFA'))
                                         st.plotly_chart(fig_est, use_container_width=True)
                                     else:
                                         st.info("無季度數據")
@@ -916,7 +926,7 @@ def render_stock_strategy_page():
                                         fig_trend = go.Figure()
                                         for col in trend_plot.columns:
                                             fig_trend.add_trace(go.Scatter(x=trend_plot.index, y=trend_plot[col], mode='lines+markers', name=col))
-                                        fig_trend.update_layout(title="EPS 預估修正趨勢", plot_bgcolor='white', font=dict(color='black'))
+                                        fig_trend.update_layout(template='plotly_dark', title="EPS 預估修正趨勢", plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='#FAFAFA'))
                                         st.plotly_chart(fig_trend, use_container_width=True)
                                 except: st.info("繪圖失敗")
 
@@ -931,7 +941,7 @@ def render_stock_strategy_page():
                                     fig_rec = px.bar(x=rec_keys, y=rec_vals, title="分析師評級分佈 (Consensus)", 
                                                      labels={'x': 'Rating', 'y': 'Count'}, color=rec_keys,
                                                      color_discrete_map={'strongBuy': 'green', 'buy': 'lightgreen', 'hold': 'grey', 'sell': 'pink', 'strongSell': 'red'})
-                                    fig_rec.update_layout(plot_bgcolor='white', font=dict(color='black'))
+                                    fig_rec.update_layout(template='plotly_dark', plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='#FAFAFA'))
                                     st.plotly_chart(fig_rec, use_container_width=True)
                                 except: st.info("繪圖失敗")
 
@@ -959,9 +969,9 @@ def render_stock_strategy_page():
                             fig_target.add_trace(go.Bar(y=['Price'], x=[low_target], name='Low', orientation='h', marker_color='#ff4b4b'))
                             fig_target.add_trace(go.Bar(y=['Price'], x=[target_mean - low_target], name='Mean', orientation='h', marker_color='#2b7de9', base=low_target))
                             fig_target.add_trace(go.Bar(y=['Price'], x=[high_target - target_mean], name='High', orientation='h', marker_color='#008000', base=target_mean))
-                            fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="black", annotation_text="Now")
+                            fig_target.add_vline(x=current_price, line_width=3, line_dash="dash", line_color="#FAFAFA", annotation_text="Now")
                             
-                            fig_target.update_layout(barmode='stack', title="目標價區間", height=200, margin=dict(l=20, r=20, t=30, b=20), showlegend=False, plot_bgcolor='white', font=dict(color='black'))
+                            fig_target.update_layout(template='plotly_dark', barmode='stack', title="目標價區間", height=200, margin=dict(l=20, r=20, t=30, b=20), showlegend=False, plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='#FAFAFA'))
                             st.plotly_chart(fig_target, use_container_width=True)
 
             except Exception as e:
@@ -1050,7 +1060,7 @@ def render_macro_page():
     st.markdown("#### VIX 波動率走勢 (1 Year)")
     fig_vix = px.line(vix_series, title="CBOE VIX Index")
     fig_vix.add_hline(y=20, line_dash="dash", line_color="red")
-    fig_vix.update_layout(plot_bgcolor='white', font=dict(color='black'))
+    fig_vix.update_layout(template='plotly_dark', plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='#FAFAFA'))
     st.plotly_chart(fig_vix, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1138,7 +1148,10 @@ def render_liquidity_page():
         norm_obv = (sp500['OBV'] - sp500['OBV'].min()) / (sp500['OBV'].max() - sp500['OBV'].min())
         
         df_chart = pd.DataFrame({'S&P 500': norm_price, 'OBV (資金)': norm_obv})
-        st.line_chart(df_chart)
+        # st.line_chart(df_chart) -> Replace with Plotly for Dark Theme consistency
+        fig_obv = px.line(df_chart, title="S&P 500 vs OBV (Normalized)")
+        fig_obv.update_layout(template='plotly_dark', plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='#FAFAFA'))
+        st.plotly_chart(fig_obv, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 # --- 9. 主程式 ---
